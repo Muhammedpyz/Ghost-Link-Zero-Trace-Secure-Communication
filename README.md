@@ -51,7 +51,7 @@ Your messages are encrypted twice before leaving your device:
 ### Setup
 1.  Clone the repository:
     ```bash
-    git clone https://github.com/YOUR_USERNAME/Ghost-Link.git
+    git clone https://github.com/Muhammedpyz/Ghost-Link-Zero-Trace-Secure-Communication.git
     cd Ghost-Link
     ```
 
