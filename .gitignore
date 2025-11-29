@@ -1,0 +1,16 @@
+__pycache__/
+*.py[cod]
+*$py.class
+dist/
+build/
+*.spec
+hidden_service/
+Tor/
+tor/
+Data/
+*.tar.gz
+*.log
+.vscode/
+.idea/
+venv/
+env/
