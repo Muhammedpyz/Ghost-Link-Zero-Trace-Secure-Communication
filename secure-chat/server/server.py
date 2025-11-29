@@ -968,7 +968,11 @@ def download_tor():
         print("[Tor] İndirme tamamlandı. Dosyalar çıkartılıyor...")
         
         with tarfile.open(local_filename, "r:gz") as tar:
-            tar.extractall()
+            # Python 3.12+ security filter
+            if sys.version_info >= (3, 12):
+                tar.extractall(filter='data')
+            else:
+                tar.extractall()
             
         print("[Tor] Kurulum başarılı!")
         try:
@@ -1211,23 +1215,6 @@ def handle_client(client_socket):
                                    struct.pack('!B', len(sender_bytes)) + \
                                    sender_bytes + \
                                    payload
-                            # Eğer ilk katılımda peer yoksa, public key'i de ekle (ekstra alan)
-                            # Client, direct mesajı alıp peer yoksa, payload'ın sonuna sender'ın public key'i eklenir
-                            # Bu, client.py'de peer_manager.add_peer() eksikse peer eklemeyi sağlar
-                            # Burada sender'ın public key'ini ekle (isteğe bağlı, backward compatible)
-                            # Sender'ın public key'i handshake ile zaten iletiliyor, ama direct'te de eklenirse garanti olur
-                            # Sender'ın public key'ini bulmak için handshake'den alınan public key'i saklamak gerekir
-                            # Basit çözüm: handshake'de public key'i nickname ile eşleştir ve burada ekle
-                            # Aşağıda, handshake'den gelen public key'i bir dict'te saklayalım
-                            if not hasattr(handle_client, 'peer_pubkeys'):
-                                handle_client.peer_pubkeys = {}
-                            # Handshake'de public key'i kaydet
-                            if parsed.get('sender_pubkey'):
-                                handle_client.peer_pubkeys[nickname] = parsed['sender_pubkey']
-                            # Eğer target_nick için peer yoksa, public key'i ekle
-                            sender_pubkey = handle_client.peer_pubkeys.get(nickname)
-                            if sender_pubkey:
-                                new_body += sender_pubkey
                         protocol.send_packet(clients[target_nick], new_body)
             
             elif parsed['type'] == 'group':

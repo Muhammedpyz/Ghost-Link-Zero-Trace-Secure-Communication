@@ -430,7 +430,8 @@ def noise_generator(sock):
             fake_packet = protocol.create_data_body(fake_iv, noise_data)
             
             protocol.send_packet(sock, fake_packet)
-        except:
+        except Exception:
+            # Soket kapalıysa veya hata varsa döngüden çık (Sessizce)
             break
 
 # ==========================================
@@ -1217,6 +1218,13 @@ def receive_messages(sock):
                 if peer_manager.add_peer(sender, pk_bytes):
                     print_system(f"Yeni kullanıcı katıldı: {sender}")
                     
+                    # [GÜVENLİK] Public Key değişimi Tor Hidden Service (End-to-End Encrypted)
+                    # ve Traffic Camouflage katmanları altında güvenle yapılır.
+                    # Yeni gelen kullanıcının bizi tanıması için kendi anahtarımızı gönderiyoruz.
+                    pub_bytes = crypto.public_key_to_bytes(public_key)
+                    my_handshake = protocol.create_handshake_body(pub_bytes)
+                    protocol.send_packet(sock, my_handshake)
+
                     # 2. Send MY Chain Key to them (Unicast)
                     ratchet = peer_manager.get_ratchet(sender)
                     my_chain_key = peer_manager.my_chain_key.unlock()
