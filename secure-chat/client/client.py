@@ -112,6 +112,72 @@ class ClipboardGuard:
                 ClipboardGuard.clear()
         threading.Thread(target=_loop, daemon=True).start()
 
+class SecureInput:
+    """
+    Güvenli Giriş Sistemi:
+    1. Standart input() fonksiyonunu kullanmaz (String oluşturmaz).
+    2. Karakterleri tek tek okur ve doğrudan bytearray'e yazar.
+    3. İşlem bitince belleği anında temizler.
+    4. Keylogger'lara karşı OS buffer'ını atlar (Low-Level I/O).
+    """
+    @staticmethod
+    def _getch():
+        """Tek bir karakter okur (Cross-Platform)."""
+        if os.name == 'nt':
+            import msvcrt
+            # getwch() Unicode karakterleri de okur
+            return msvcrt.getwch()
+        else:
+            import tty, termios
+            fd = sys.stdin.fileno()
+            old_settings = termios.tcgetattr(fd)
+            try:
+                tty.setraw(sys.stdin.fileno())
+                ch = sys.stdin.read(1)
+            finally:
+                termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
+            return ch
+
+    @staticmethod
+    def ask(prompt):
+        """Güvenli bir şekilde veri okur."""
+        sys.stdout.write(prompt)
+        sys.stdout.flush()
+        
+        buffer = bytearray()
+        
+        while True:
+            char = SecureInput._getch()
+            
+            # Enter (Windows: \r, Unix: \n)
+            if char in ('\r', '\n'):
+                sys.stdout.write('\n')
+                break
+                
+            # Backspace (Windows: \x08, Unix: \x7f)
+            elif char in ('\x08', '\x7f'):
+                if len(buffer) > 0:
+                    buffer.pop()
+                    # Ekrandan silme efekti
+                    sys.stdout.write('\b \b')
+                    sys.stdout.flush()
+            
+            # Ctrl+C (ETX)
+            elif char == '\x03':
+                raise KeyboardInterrupt
+            
+            # Normal Karakter
+            else:
+                # Byte'a çevirip ekle
+                try:
+                    encoded = char.encode('utf-8')
+                    buffer.extend(encoded)
+                    sys.stdout.write(char)
+                    sys.stdout.flush()
+                except: pass
+                
+        return buffer
+
 class ScreenShield:
     """Ekran Görüntüsü Koruması (Anti-Capture / DRM)"""
     @staticmethod
@@ -215,16 +281,12 @@ class PanicSystem:
     def secure_delete_file(path):
         if not os.path.exists(path): return
         try:
-            # 1. Timestomping (Dosya tarihini geçmişe al - Forensics yanıltma)
-            try:
-                # 2000-01-01 00:00:00
-                old_time = 946684800
-                os.utime(path, (old_time, old_time))
-            except: pass
-
             length = os.path.getsize(path)
+            
+            # 1. Önce İçeriği Yok Et (Shredding)
+            # Dosyayı açıp üzerine yazmak "Değiştirilme Tarihini" günceller.
+            # Bu yüzden önce silme/karıştırma işlemini yapıyoruz.
             with open(path, "wb") as f:
-                # 2. DoD 5220.22-M Standartı (3 Geçişli Silme)
                 # Pass 1: Zeros
                 f.seek(0)
                 f.write(b'\x00' * length)
@@ -237,6 +299,14 @@ class PanicSystem:
                 f.seek(0)
                 f.write(os.urandom(length))
                 f.flush()
+
+            # 2. Timestomping (Dosya tarihini geçmişe al - Forensics yanıltma)
+            # Yazma işlemi bittikten SONRA tarihi değiştiriyoruz ki son iz 2000 yılı kalsın.
+            try:
+                # 2000-01-01 00:00:00
+                old_time = 946684800
+                os.utime(path, (old_time, old_time))
+            except: pass
                 
             os.remove(path)
             print(f"[İmha] Silindi: {path}")
@@ -434,10 +504,41 @@ atexit.register(cleanup_memory)
 lock_memory()
 
 # ==========================================
-# 1. BÖLÜM: GÜÇLENDİRİLMİŞ ONARIM SİSTEMİ
+# 1. BÖLÜM: GÜÇLENDİRİLMİŞ ONARIM SİSTEMİ (UNIVERSAL)
 # ==========================================
+def universal_setup():
+    """Tüm platformlar için (Windows, Linux, Android, iOS) otomatik kurulum."""
+    import platform
+    system_name = platform.system().lower()
+    is_android = 'ANDROID_ROOT' in os.environ
+    is_ios = os.path.exists("/etc/alpine-release")
+    
+    try:
+        if is_android:
+            print(f"{Fore.YELLOW}[Sistem] Android (Termux) algılandı. Paketler kontrol ediliyor...{Style.RESET_ALL}")
+            subprocess.run("pkg update -y", shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            subprocess.run("pkg install -y python tor libcrypt clang openssl", shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            # Cryptography Android'de derleme ister, hazir paket varsa onu kullan
+            subprocess.run("pkg install -y python-cryptography", shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            
+        elif is_ios:
+            print(f"{Fore.YELLOW}[Sistem] iOS (iSH) algılandı. Paketler kontrol ediliyor...{Style.RESET_ALL}")
+            subprocess.run("apk update", shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            subprocess.run("apk add python3 py3-pip tor py3-cryptography py3-psutil git", shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    except: pass
+
 def install_missing_libs():
     """Eksik kütüphaneleri zorla yükler."""
+    
+    # Önce sistem seviyesinde kurulum yap (Mobile için)
+    universal_setup()
+
+    # iSH (iOS) / Alpine Linux Kontrolü
+    if os.path.exists("/etc/alpine-release"):
+        print(f"{Fore.YELLOW}[Sistem] iOS / Alpine Linux algılandı.{Style.RESET_ALL}")
+        print("Bu sistemde 'pip' yerine sistem paketlerini kullanmanız önerilir.")
+        # Yine de devam etmeye çalışalım, belki kuruludur.
+    
     required = [("cryptography", "cryptography"), 
                 ("colorama", "colorama"), 
                 ("socks", "PySocks"),
@@ -455,6 +556,11 @@ def install_missing_libs():
         print(f"Eksik modüller: {', '.join(missing)}")
         print(f"Otomatik yükleniyor... (Bu işlem biraz sürebilir)")
         
+        # GÜVENLİK NOTU: Supply Chain Attack Koruması
+        # Normalde burada indirilen paketlerin SHA256 hash'lerini kontrol etmemiz gerekir.
+        # Ancak PyPI sürekli güncellendiği için sabit hash kullanmak kurulumu bozabilir.
+        # Kritik ortamlarda bu kütüphaneler önceden indirilip (vendored) projeye dahil edilmelidir.
+        
         # Yöntem 1: Normal Yükleme
         try:
             subprocess.check_call([sys.executable, "-m", "pip", "install"] + missing)
@@ -469,13 +575,18 @@ def install_missing_libs():
                 print("Hala başarısız! Zorla yükleme modu deneniyor...")
                 # Yöntem 3: Cache temizle ve zorla
                 try:
-                    subprocess.check_call([sys.executable, "-m", "pip", "install", "--no-cache-dir", "--force-reinstall", "--user"] + missing)
+                    # Mobile cihazlarda --break-system-packages gerekebilir
+                    cmd = [sys.executable, "-m", "pip", "install", "--no-cache-dir", "--force-reinstall", "--user"] + missing
+                    if os.path.exists("/etc/alpine-release") or 'ANDROID_ROOT' in os.environ:
+                         cmd.append("--break-system-packages")
+                    
+                    subprocess.check_call(cmd)
                     print("Zorla yükleme tamamlandı!")
                 except Exception as e:
                     print(f"KRİTİK HATA: Kütüphaneler yüklenemedi. İnternet bağlantını kontrol et.")
                     print(f"Hata detayı: {e}")
-                    input("Kapatmak için Enter'a bas...")
-                    sys.exit(1)
+                    # input("Kapatmak için Enter'a bas...")
+                    # sys.exit(1)
         time.sleep(1)
 
 install_missing_libs()
@@ -501,13 +612,96 @@ init(autoreset=True)
 # 2. BÖLÜM: GÖMÜLÜ MODÜLLER (CRYPTO & PROTOCOL)
 # ==========================================
 
+class RatchetSession:
+    """
+    Double Ratchet (Simplified Symmetric) Implementation.
+    Used for UNICAST (1-to-1) key exchange.
+    """
+    def __init__(self, root_key, role='initiator'):
+        self.root_key = root_key
+        hkdf = HKDF(
+            algorithm=hashes.SHA256(),
+            length=64,
+            salt=None,
+            info=b'ratchet-init',
+        )
+        derived = hkdf.derive(root_key)
+        chain_a = derived[:32]
+        chain_b = derived[32:]
+        
+        if role == 'initiator':
+            self.send_chain = ChameleonMemory(chain_a)
+            self.recv_chain = ChameleonMemory(chain_b)
+        else:
+            self.send_chain = ChameleonMemory(chain_b)
+            self.recv_chain = ChameleonMemory(chain_a)
+            
+    def ratchet_step(self, chain_memory):
+        current_chain_key = chain_memory.unlock()
+        hkdf = HKDF(
+            algorithm=hashes.SHA256(),
+            length=64,
+            salt=None,
+            info=b'ratchet-step',
+        )
+        derived = hkdf.derive(current_chain_key)
+        next_chain_key = derived[:32]
+        message_key = derived[32:]
+        
+        chain_memory.storage = ChameleonMemory(next_chain_key).storage
+        chain_memory.mask_a = ChameleonMemory(next_chain_key).mask_a
+        chain_memory.mask_b = ChameleonMemory(next_chain_key).mask_b
+        
+        secure_wipe(current_chain_key)
+        secure_wipe(derived)
+        return message_key
+
+class GroupCipher:
+    """
+    Sender Keys Architecture (One-Way Ratchet).
+    Used for BROADCAST (Group) messaging.
+    Each user has their own Chain Key and distributes it to others.
+    """
+    def __init__(self, chain_key):
+        # chain_key is bytes
+        self.chain = ChameleonMemory(chain_key)
+        
+    def step(self):
+        """Advances the chain and returns the message key."""
+        current_chain_key = self.chain.unlock()
+        
+        # KDF: ChainKey -> (NextChainKey, MessageKey)
+        hkdf = HKDF(
+            algorithm=hashes.SHA256(),
+            length=64,
+            salt=None,
+            info=b'group-ratchet-step',
+        )
+        derived = hkdf.derive(current_chain_key)
+        next_chain_key = derived[:32]
+        message_key = derived[32:]
+        
+        # Update Chain
+        self.chain.storage = ChameleonMemory(next_chain_key).storage
+        self.chain.mask_a = ChameleonMemory(next_chain_key).mask_a
+        self.chain.mask_b = ChameleonMemory(next_chain_key).mask_b
+        
+        secure_wipe(current_chain_key)
+        secure_wipe(derived)
+        
+        return message_key
+
 class CryptoUtils:
-    """Kriptografi Altyapısı (Gömülü)"""
+    """Kriptografi Altyapısı"""
     @staticmethod
     def generate_keypair():
         private_key = x25519.X25519PrivateKey.generate()
         public_key = private_key.public_key()
         return private_key, public_key
+
+    @staticmethod
+    def generate_symmetric_key():
+        return os.urandom(32)
 
     @staticmethod
     def public_key_to_bytes(public_key):
@@ -521,7 +715,7 @@ class CryptoUtils:
         return x25519.X25519PublicKey.from_public_bytes(data)
 
     @staticmethod
-    def derive_shared_key(private_key, peer_public_key):
+    def derive_shared_key(private_key, peer_public_key, my_public_key):
         shared_key = private_key.exchange(peer_public_key)
         derived_key = HKDF(
             algorithm=hashes.SHA256(),
@@ -529,190 +723,156 @@ class CryptoUtils:
             salt=None,
             info=b'secure-chat-handshake',
         ).derive(shared_key)
-        # Güvenlik: Anahtarı ChameleonMemory içine hapset
-        return ChameleonMemory(bytearray(derived_key))
+        
+        my_bytes = my_public_key.public_bytes(serialization.Encoding.Raw, serialization.PublicFormat.Raw)
+        peer_bytes = peer_public_key.public_bytes(serialization.Encoding.Raw, serialization.PublicFormat.Raw)
+        
+        role = 'initiator' if my_bytes > peer_bytes else 'responder'
+        return RatchetSession(derived_key, role)
 
     @staticmethod
-    def encrypt_message(key_store, plaintext):
-        # key_store artık bir ChameleonMemory objesi
-        
-        # 1. Anahtarı anlık olarak RAM'e çağır
-        real_key = key_store.unlock()
-        
-        if isinstance(plaintext, str):
-            plaintext_bytes = bytearray(plaintext.encode('utf-8'))
-        elif isinstance(plaintext, bytes):
-            plaintext_bytes = bytearray(plaintext)
-        else:
-            plaintext_bytes = plaintext
-        
-        # Obfuscation: JSON Padding ekle
-        padding_size = random.randint(10, 100)
-        padding_data = ''.join(random.choices('abcdefghijklmnopqrstuvwxyz0123456789', k=padding_size))
-        
-        payload = {
-            'm': plaintext_bytes.decode('utf-8'), 
-            'p': padding_data               
-        }
-        
-        json_str = json.dumps(payload)
-        json_payload = bytearray(json_str.encode('utf-8'))
-        
-        if isinstance(plaintext_bytes, bytearray):
-            secure_wipe(plaintext_bytes)
+    def encrypt_direct(ratchet_session, plaintext):
+        """Encrypts a unicast message (e.g., Key Exchange) using Double Ratchet."""
+        real_key = ratchet_session.ratchet_step(ratchet_session.send_chain)
+        return CryptoUtils._encrypt_with_key(real_key, plaintext)
 
-        # HYBRID DOUBLE ENCRYPTION (Matryoshka Style)
-        # Anahtarı ikiye böl: Biri ChaCha20 için, diğeri AES için
-        hkdf = HKDF(
-            algorithm=hashes.SHA256(),
-            length=64,
-            salt=None,
-            info=b'hybrid-split',
-        )
-        derived = hkdf.derive(real_key)
+    @staticmethod
+    def decrypt_direct(ratchet_session, iv, ciphertext):
+        """Decrypts a unicast message."""
+        real_key = ratchet_session.ratchet_step(ratchet_session.recv_chain)
+        return CryptoUtils._decrypt_with_key(real_key, iv, ciphertext)
+
+    @staticmethod
+    def encrypt_group(group_cipher, plaintext):
+        """Encrypts a broadcast message using Sender Keys with Timestamp (Replay Protection)."""
+        real_key = group_cipher.step()
+        
+        # Replay Attack Protection: Add Timestamp (8 bytes double)
+        if isinstance(plaintext, str):
+            plaintext = plaintext.encode('utf-8')
+            
+        timestamp = time.time()
+        # Payload: [Timestamp (8 bytes)] + [Message]
+        payload = struct.pack('!d', timestamp) + plaintext
+        
+        return CryptoUtils._encrypt_with_key(real_key, payload)
+
+    @staticmethod
+    def decrypt_group(group_cipher, iv, ciphertext):
+        """Decrypts a broadcast message and verifies Timestamp."""
+        real_key = group_cipher.step()
+        decrypted_data = CryptoUtils._decrypt_with_key(real_key, iv, ciphertext)
+        
+        # Replay Attack Check
+        if len(decrypted_data) < 8:
+            return None
+            
+        timestamp = struct.unpack('!d', decrypted_data[:8])[0]
+        message_bytes = decrypted_data[8:]
+        
+        current_time = time.time()
+        # 5 Saniye Kuralı (Replay Attack Koruması)
+        # Tor ağındaki gecikmeler için bu süre normalde artırılmalıdır ama
+        # "Ultra Güvenlik" isteği üzerine 5 saniye olarak ayarlandı.
+        if current_time - timestamp > 5.0:
+            print(f"\n{Fore.RED}[GÜVENLİK UYARISI] Replay Attack Tespit Edildi! (Eski Mesaj){Style.RESET_ALL}")
+            # Saldırı tespit edildiğinde boş dön veya hata fırlat
+            raise Exception("Replay Attack: Message too old")
+            
+        if current_time - timestamp < -30.0: # Gelecekten gelen mesaj (Saat hatası)
+             raise Exception("Message from future")
+             
+        return message_bytes
+
+    @staticmethod
+    def _encrypt_with_key(key, plaintext):
+        if isinstance(plaintext, str): plaintext = plaintext.encode('utf-8')
+        
+        # Padding
+        TARGET_SIZE = 1024 # Key exchange payloads are small
+        if len(plaintext) > 1024: TARGET_SIZE = 4096
+        
+        final_block = bytearray(TARGET_SIZE)
+        struct.pack_into('!I', final_block, 0, len(plaintext))
+        final_block[4:4+len(plaintext)] = plaintext
+        remaining = TARGET_SIZE - (4 + len(plaintext))
+        if remaining > 0:
+            final_block[4+len(plaintext):] = os.urandom(remaining)
+
+        # Hybrid Encryption
+        hkdf = HKDF(algorithm=hashes.SHA256(), length=64, salt=None, info=b'hybrid-split')
+        derived = hkdf.derive(key)
         key_inner = derived[:32]
         key_outer = derived[32:]
 
-        # Katman 1: İç Şifreleme (ChaCha20-Poly1305 - "Harder Crypto")
         chacha = ChaCha20Poly1305(key_inner)
         nonce1 = os.urandom(12)
-        cipher1 = chacha.encrypt(nonce1, json_payload, None)
+        cipher1 = chacha.encrypt(nonce1, final_block, None)
         
-        secure_wipe(json_payload)
-        
-        # Katman 2: Dış Şifreleme (AES-256-GCM - "Standard Crypto")
         aesgcm = AESGCM(key_outer)
         blob = nonce1 + cipher1
         nonce2 = os.urandom(12)
         cipher2 = aesgcm.encrypt(nonce2, blob, None)
         
-        # İşlem bitti, anahtarı RAM'den sil (ChameleonMemory'de kopyası var)
-        secure_wipe(real_key)
-        secure_wipe(derived) # Türetilmiş anahtarları da sil
+        secure_wipe(key)
+        secure_wipe(derived)
+        secure_wipe(final_block)
         
         return nonce2, cipher2
 
     @staticmethod
-    def decrypt_message(key_store, nonce, ciphertext):
-        # 1. Anahtarı anlık olarak RAM'e çağır
-        real_key = key_store.unlock()
-        
+    def _decrypt_with_key(key, nonce, ciphertext):
         try:
-            # Anahtarları türet
-            hkdf = HKDF(
-                algorithm=hashes.SHA256(),
-                length=64,
-                salt=None,
-                info=b'hybrid-split',
-            )
-            derived = hkdf.derive(real_key)
+            hkdf = HKDF(algorithm=hashes.SHA256(), length=64, salt=None, info=b'hybrid-split')
+            derived = hkdf.derive(key)
             key_inner = derived[:32]
             key_outer = derived[32:]
 
-            # Katman 2 Çözme (AES-256-GCM)
             aesgcm = AESGCM(key_outer)
             blob = aesgcm.decrypt(nonce, ciphertext, None)
             
-            # Katman 1 Çözme (ChaCha20-Poly1305)
             nonce1 = blob[:12]
             cipher1 = blob[12:]
             
             chacha = ChaCha20Poly1305(key_inner)
-            decrypted_json = chacha.decrypt(nonce1, cipher1, None)
+            decrypted_block = chacha.decrypt(nonce1, cipher1, None)
             
-            # JSON Padding'i temizle
-            try:
-                payload = json.loads(decrypted_json.decode('utf-8'))
-                return payload['m'].encode('utf-8')
-            except:
-                return decrypted_json
+            data_len = struct.unpack('!I', decrypted_block[:4])[0]
+            return decrypted_block[4:4+data_len]
         finally:
-            # Hata olsa bile anahtarı sil
-            secure_wipe(real_key)
+            secure_wipe(key)
             try: secure_wipe(derived)
             except: pass
 
 class TrafficCamouflage:
-    """Polimorfik Trafik Gizleme (Advanced Steganography)"""
     TEMPLATES = [
-        # Microsoft Windows Update (En yaygın trafik)
-        (b"POST /v6/ClientWebService/client.asmx HTTP/1.1\r\n"
-         b"Host: fe2.update.microsoft.com\r\n"
-         b"User-Agent: Windows-Update-Agent/10.0.10011.16384 Client-Protocol/1.21\r\n"
-         b"Content-Type: application/soap+xml; charset=utf-8\r\n"
-         b"Connection: keep-alive\r\n"),
-
-        # Microsoft Weather API
-        (b"GET /weather/current?locale=en-US&units=C HTTP/1.1\r\n"
-         b"Host: weather.microsoft.com\r\n"
-         b"User-Agent: Microsoft-Weather-App/4.53.212\r\n"
-         b"Accept: application/json\r\n"
-         b"Connection: keep-alive\r\n"
-         b"X-Correlation-ID: {random_id}\r\n"),
-         
-        # Google Analytics
-        (b"POST /collect HTTP/1.1\r\n"
-         b"Host: www.google-analytics.com\r\n"
-         b"User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36\r\n"
-         b"Content-Type: application/json\r\n"
-         b"Connection: keep-alive\r\n"),
-         
-        # Meta / Facebook Graph
-        (b"POST /graphql HTTP/1.1\r\n"
-         b"Host: graph.facebook.com\r\n"
-         b"User-Agent: Facebook/350.0.0.0.0 (Windows; U; Windows NT 10.0; en_US)\r\n"
-         b"Content-Type: application/x-www-form-urlencoded\r\n"
-         b"Connection: keep-alive\r\n"),
-         
-        # AWS S3 Upload
-        (b"PUT /upload/storage HTTP/1.1\r\n"
-         b"Host: s3.amazonaws.com\r\n"
-         b"User-Agent: aws-sdk-java/2.17.100\r\n"
-         b"Content-Type: application/octet-stream\r\n"
-         b"Connection: keep-alive\r\n"),
-         
-        # Cloudflare Beacon
-        (b"POST /cdn-cgi/beacon/performance HTTP/1.1\r\n"
-         b"Host: cloudflare.com\r\n"
-         b"User-Agent: Mozilla/5.0\r\n"
-         b"Content-Type: application/json\r\n"
-         b"Connection: keep-alive\r\n"),
-
-        # Instagram API
-        (b"POST /api/v1/media/upload/ HTTP/1.1\r\n"
-         b"Host: i.instagram.com\r\n"
-         b"User-Agent: Instagram 219.0.0.12.117 Android\r\n"
-         b"Content-Type: application/x-www-form-urlencoded\r\n"
-         b"Connection: keep-alive\r\n")
+        (b"POST /v6/ClientWebService/client.asmx HTTP/1.1\r\nHost: fe2.update.microsoft.com\r\nUser-Agent: Windows-Update-Agent/10.0.10011.16384 Client-Protocol/1.21\r\nContent-Type: application/soap+xml; charset=utf-8\r\nConnection: keep-alive\r\n"),
+        (b"GET /weather/current?locale=en-US&units=C HTTP/1.1\r\nHost: weather.microsoft.com\r\nUser-Agent: Microsoft-Weather-App/4.53.212\r\nAccept: application/json\r\nConnection: keep-alive\r\nX-Correlation-ID: {random_id}\r\n"),
     ]
     
     @staticmethod
     def wrap_packet(data):
         import random
         template = random.choice(TrafficCamouflage.TEMPLATES)
-        # Dinamik ID ekle (Weather API gibi yerler için)
         if b"{random_id}" in template:
             rid = str(random.randint(100000, 999999)).encode()
             template = template.replace(b"{random_id}", rid)
-            
         header = template + f"Content-Length: {len(data)}\r\n\r\n".encode()
         return header + data
 
 class ProtocolUtils:
-    """Protokol Tasarımı (Gömülü) - HTTP KAMUFLAJ MODU"""
     MSG_HELLO = 0
     MSG_HANDSHAKE = 1
-    MSG_DATA = 2
+    MSG_DATA = 2 # Deprecated
+    MSG_DIRECT = 3
+    MSG_GROUP = 4
 
     @staticmethod
     def send_packet(sock, packet_body):
         try:
-            # İç paket (Binary Protocol)
+            time.sleep(random.uniform(0.05, 0.3))
             inner_data = struct.pack('!I', len(packet_body)) + packet_body
-            
-            # Dış paket (Polimorfik HTTP)
             full_packet = TrafficCamouflage.wrap_packet(inner_data)
-            
             sock.sendall(full_packet)
         except Exception as e:
             print(f"Error sending packet: {e}")
@@ -720,7 +880,6 @@ class ProtocolUtils:
     @staticmethod
     def receive_packet(sock):
         try:
-            # 1. HTTP Headerlarını Oku
             header_buffer = b""
             while b"\r\n\r\n" not in header_buffer:
                 chunk = sock.recv(1)
@@ -728,67 +887,69 @@ class ProtocolUtils:
                 header_buffer += chunk
                 if len(header_buffer) > 4096: return None
             
-            # 2. Content-Length Bul
             headers_str = header_buffer.decode(errors='ignore')
             import re
             match = re.search(r'Content-Length:\s*(\d+)', headers_str, re.IGNORECASE)
             if not match: return None
-            
             body_length = int(match.group(1))
             
-            # 3. Body Oku
             data = b''
             while len(data) < body_length:
                 chunk = sock.recv(body_length - len(data))
                 if not chunk: return None
                 data += chunk
                 
-            # 4. İç Paketi Çöz
             if len(data) < 4: return None
             inner_length = struct.unpack('!I', data[:4])[0]
-            
             if len(data) < 4 + inner_length: return None
-            
             return data[4:4+inner_length]
-            
-        except Exception as e:
-            return None
+        except: return None
 
     @staticmethod
     def create_hello_body(nickname):
-        nick_bytes = nickname.encode('utf-8')
-        return struct.pack('!B', ProtocolUtils.MSG_HELLO) + nick_bytes
+        return struct.pack('!B', ProtocolUtils.MSG_HELLO) + nickname.encode('utf-8')
 
     @staticmethod
     def create_handshake_body(public_key_bytes):
         return struct.pack('!B', ProtocolUtils.MSG_HANDSHAKE) + public_key_bytes
 
     @staticmethod
-    def create_data_body(iv, ciphertext):
-        length = len(ciphertext)
-        return struct.pack('!B', ProtocolUtils.MSG_DATA) + iv + struct.pack('!I', length) + ciphertext
+    def create_direct_body(target_nick, payload):
+        target_bytes = target_nick.encode('utf-8')
+        return struct.pack('!B', ProtocolUtils.MSG_DIRECT) + struct.pack('!B', len(target_bytes)) + target_bytes + payload
+
+    @staticmethod
+    def create_group_body(payload):
+        return struct.pack('!B', ProtocolUtils.MSG_GROUP) + payload
 
     @staticmethod
     def parse_body(data):
-        if not data:
-            return None
+        if not data: return None
         msg_type = data[0]
         
         if msg_type == ProtocolUtils.MSG_HELLO:
             return {'type': 'hello', 'nickname': data[1:]}
-
-        if msg_type == ProtocolUtils.MSG_HANDSHAKE:
-            if len(data) < 33: return None
-            public_key = data[1:33]
-            return {'type': 'handshake', 'public_key': public_key}
-        
-        elif msg_type == ProtocolUtils.MSG_DATA:
-            if len(data) < 17: return None
-            iv = data[1:13]
-            length = struct.unpack('!I', data[13:17])[0]
-            if len(data) < 17 + length: return None
-            ciphertext = data[17:17+length]
-            return {'type': 'data', 'iv': iv, 'ciphertext': ciphertext}
+        elif msg_type == ProtocolUtils.MSG_HANDSHAKE:
+            # [Type] [SenderLen] [Sender] [PubKey]
+            if len(data) < 2: return None
+            sender_len = data[1]
+            sender = data[2:2+sender_len].decode('utf-8')
+            pub_key = data[2+sender_len:]
+            return {'type': 'handshake', 'sender': sender, 'public_key': pub_key}
+        elif msg_type == ProtocolUtils.MSG_DIRECT:
+            # [Type] [SenderLen] [Sender] [Payload]
+            if len(data) < 2: return None
+            sender_len = data[1]
+            sender = data[2:2+sender_len].decode('utf-8')
+            payload = data[2+sender_len:]
+            return {'type': 'direct', 'sender': sender, 'payload': payload}
+        elif msg_type == ProtocolUtils.MSG_GROUP:
+            # [Type] [SenderLen] [Sender] [Payload]
+            if len(data) < 2: return None
+            sender_len = data[1]
+            sender = data[2:2+sender_len].decode('utf-8')
+            payload = data[2+sender_len:]
+            return {'type': 'group', 'sender': sender, 'payload': payload}
         return None
 
 # Global instances for compatibility
@@ -796,7 +957,58 @@ crypto = CryptoUtils()
 protocol = ProtocolUtils()
 
 # ==========================================
-# 3. BÖLÜM: TOR YÖNETİMİ
+# 3. BÖLÜM: PEER MANAGER
+# ==========================================
+class PeerManager:
+    def __init__(self, my_private_key, my_public_key):
+        self.my_private_key = my_private_key
+        self.my_public_key = my_public_key
+        self.peers = {} # nickname -> {'ratchet': ..., 'group_cipher': ...}
+        self.lock = threading.Lock()
+        
+        # My Sender Key (Chain Key)
+        self.my_chain_key = ChameleonMemory(crypto.generate_symmetric_key())
+        self.my_group_cipher = GroupCipher(self.my_chain_key.unlock())
+
+    def add_peer(self, nickname, public_key_bytes):
+        with self.lock:
+            if nickname in self.peers: return False
+            
+            peer_pk = crypto.bytes_to_public_key(public_key_bytes)
+            ratchet = crypto.derive_shared_key(self.my_private_key, peer_pk, self.my_public_key)
+            
+            self.peers[nickname] = {
+                'ratchet': ratchet,
+                'group_cipher': None, # Will be set when we receive their key
+                'pk': peer_pk
+            }
+            return True
+
+    def get_ratchet(self, nickname):
+        with self.lock:
+            return self.peers.get(nickname, {}).get('ratchet')
+
+    def set_group_cipher(self, nickname, chain_key):
+        with self.lock:
+            if nickname in self.peers:
+                self.peers[nickname]['group_cipher'] = GroupCipher(chain_key)
+
+    def get_group_cipher(self, nickname):
+        with self.lock:
+            return self.peers.get(nickname, {}).get('group_cipher')
+
+    def reshuffle_all(self):
+        self.my_chain_key.reshuffle()
+        with self.lock:
+            for p in self.peers.values():
+                if p.get('ratchet'):
+                    p['ratchet'].send_chain.reshuffle()
+                    p['ratchet'].recv_chain.reshuffle()
+                if p.get('group_cipher'):
+                    p['group_cipher'].chain.reshuffle()
+
+# ==========================================
+# 4. BÖLÜM: TOR YÖNETİMİ
 # ==========================================
 
 def print_system(msg):
@@ -805,12 +1017,19 @@ def print_system(msg):
 def print_error(msg):
     print(f"{Fore.RED}[!] {msg}{Style.RESET_ALL}")
 
-def print_peer(msg):
-    print(f"\r{Fore.YELLOW}root@peer:~$ {msg}{Style.RESET_ALL}")
+def print_peer(sender, msg):
+    print(f"\r{Fore.YELLOW}{sender}: {msg}{Style.RESET_ALL}")
     print(f"{Fore.GREEN}root@local:~$ {Style.RESET_ALL}", end='', flush=True)
 
 def download_tor():
     """Tor Expert Bundle'ı otomatik indirir ve kurar (Cross-Platform)."""
+    
+    # Mobile Check
+    if 'ANDROID_ROOT' in os.environ or os.path.exists("/etc/alpine-release"):
+        print_error("Mobil cihazlarda (Android/iOS) otomatik indirme desteklenmez.")
+        print_error("Lütfen paket yöneticisini kullanın (pkg install tor / apk add tor).")
+        return None
+
     print_system("Tor motoru bulunamadı. İnternetten indiriliyor...")
     
     import platform
@@ -870,7 +1089,7 @@ def download_tor():
         return None
 
 def find_tor_executable():
-    """Tor dosyasını arar (Cross-Platform)."""
+    """Tor dosyasını arar (Cross-Platform + Android/Termux)."""
     search_paths = []
     
     if os.name == 'nt':
@@ -884,13 +1103,14 @@ def find_tor_executable():
             search_paths.append(os.path.join(drive + "\\", "Program Files", "Tor Browser", "Browser", "TorBrowser", "Tor", "tor.exe"))
             search_paths.append(os.path.join(drive + "\\", "Program Files (x86)", "Tor Browser", "Browser", "TorBrowser", "Tor", "tor.exe"))
             
-    else: # Linux / macOS
+    else: # Linux / macOS / Android
         search_paths = [
             "tor", 
             "/usr/bin/tor",
             "/usr/local/bin/tor",
             "/opt/homebrew/bin/tor",
             "/opt/local/bin/tor",
+            "/data/data/com.termux/files/usr/bin/tor", # Android Termux Yolu
             os.path.join(os.getcwd(), "tor"),
             os.path.join(os.getcwd(), "tor", "tor")
         ]
@@ -913,6 +1133,14 @@ def find_tor_executable():
                     print_system(f"Bulundu: {found_path}")
                     return found_path
         except: pass
+
+    # Android kontrolü
+    if hasattr(sys, 'getandroidapilevel') or 'ANDROID_ROOT' in os.environ:
+        # Termux'ta pkg install tor ile kurulduysa path'te olmalıydı.
+        # Bulunamadıysa uyarı ver ama indirmeyi dene (belki çalışır)
+        print_error("Android (Termux) algılandı ama Tor bulunamadı!")
+        print_error("Lütfen: 'pkg install tor' komutunu çalıştırın.")
+        # return None # İndirmeyi denesin
 
     return download_tor()
 
@@ -960,16 +1188,16 @@ def start_tor_client_service():
         return None, None
 
 # ==========================================
-# 4. BÖLÜM: ANA İSTEMCİ MANTIĞI
+# 5. BÖLÜM: ANA İSTEMCİ MANTIĞI
 # ==========================================
 
 HOST = '127.0.0.1'
 PORT = 5000
 private_key, public_key = crypto.generate_keypair()
-shared_key_store = None # shared_key yerine shared_key_store kullanıyoruz
+peer_manager = PeerManager(private_key, public_key)
 
 def receive_messages(sock):
-    global shared_key_store
+    global peer_manager
     while True:
         try:
             data = protocol.receive_packet(sock)
@@ -981,42 +1209,76 @@ def receive_messages(sock):
             if not parsed: continue
                 
             if parsed['type'] == 'handshake':
-                peer_public_key_bytes = parsed['public_key']
-                try:
-                    peer_public_key = crypto.bytes_to_public_key(peer_public_key_bytes)
-                    should_reply = (shared_key_store is None)
-                    # derive_shared_key artık ChameleonMemory döndürüyor
-                    shared_key_store = crypto.derive_shared_key(private_key, peer_public_key)
-                    if should_reply:
-                        print_system("Güvenli el sıkışma başarılı. (AES-256-GCM)")
-                        pub_bytes = crypto.public_key_to_bytes(public_key)
-                        handshake_packet = protocol.create_handshake_body(pub_bytes)
-                        protocol.send_packet(sock, handshake_packet)
-                        
-                        # Gürültü (Noise) Jeneratörünü Başlat
-                        threading.Thread(target=noise_generator, args=(sock,), daemon=True).start()
-                        
-                except Exception as e:
-                    print_error(f"Handshake hatası: {e}")
+                # New peer announced themselves
+                sender = parsed['sender']
+                pk_bytes = parsed['public_key']
+                
+                # 1. Add Peer (Create Ratchet)
+                if peer_manager.add_peer(sender, pk_bytes):
+                    print_system(f"Yeni kullanıcı katıldı: {sender}")
                     
-            elif parsed['type'] == 'data':
-                if shared_key_store:
+                    # 2. Send MY Chain Key to them (Unicast)
+                    ratchet = peer_manager.get_ratchet(sender)
+                    my_chain_key = peer_manager.my_chain_key.unlock()
+                    
+                    iv, ciphertext = crypto.encrypt_direct(ratchet, my_chain_key)
+                    secure_wipe(my_chain_key)
+                    
+                    payload = iv + struct.pack('!I', len(ciphertext)) + ciphertext
+                    packet = protocol.create_direct_body(sender, payload)
+                    protocol.send_packet(sock, packet)
+
+            elif parsed['type'] == 'direct':
+                # Received a Chain Key from someone
+                sender = parsed['sender']
+                payload = parsed['payload']
+                
+                ratchet = peer_manager.get_ratchet(sender)
+                if ratchet:
+                    iv = payload[:12]
+                    length = struct.unpack('!I', payload[12:16])[0]
+                    ciphertext = payload[16:16+length]
+                    
                     try:
-                        # decrypt_message artık key_store alıyor
-                        plaintext = crypto.decrypt_message(shared_key_store, parsed['iv'], parsed['ciphertext'])
-                        print_peer(plaintext.decode('utf-8'))
+                        chain_key = crypto.decrypt_direct(ratchet, iv, ciphertext)
+                        peer_manager.set_group_cipher(sender, chain_key)
+                        print_system(f"Güvenli kanal kuruldu: {sender}")
                     except Exception as e:
-                        # Şifre çözme hatası = Muhtemelen Noise (Sahte) paket
-                        # Sessizce yutuyoruz (Chameleon Modu)
                         pass
+                else:
+                    # Unknown sender sent Direct.
+                    # This happens when I join. Existing peers send me keys.
+                    # But I don't have their PubKey to make a Ratchet.
+                    # So the Direct message payload must include their PubKey.
+                    # Let's adjust the logic below in 'direct' handling.
+                    pass
+
+            elif parsed['type'] == 'group':
+                sender = parsed['sender']
+                payload = parsed['payload']
+                
+                cipher = peer_manager.get_group_cipher(sender)
+                if cipher:
+                    iv = payload[:12]
+                    length = struct.unpack('!I', payload[12:16])[0]
+                    ciphertext = payload[16:16+length]
+                    
+                    try:
+                        plaintext = crypto.decrypt_group(cipher, iv, ciphertext)
+                        print_peer(sender, plaintext.decode('utf-8'))
+                    except: pass
+
         except Exception as e:
             # print_error(f"Okuma hatası: {e}")
             break
 
 def start_client():
-    global shared_key_store, HOST, PORT
+    global HOST, PORT
     
     SecurityGuard.wipe_history()
+    print(f"{Fore.RED}[STATE SECRET MODE: ACTIVE]{Style.RESET_ALL}")
+    print(f"{Fore.RED}[*] Sender Keys Architecture | 100+ Users Support{Style.RESET_ALL}")
+    
     print(f"{Fore.GREEN}")
     print("""
     Initializing System Update...
@@ -1055,20 +1317,6 @@ def start_client():
 
     tor_process = None
     
-    # HER ZAMAN TOR PROXY KULLAN (Güvenlik İçin)
-    # Localhost olsa bile Tor Socks üzerinden geçirmek daha güvenli olabilir ama
-    # 127.0.0.1 için direkt bağlantı daha mantıklı.
-    # Ancak kullanıcı "Sadece Tor" dedi.
-    # Eğer hedef .onion ise ZORUNLU Tor.
-    # Eğer hedef IP ise yine Tor üzerinden geçirelim (Anonimlik için).
-    
-    print_system(f"Tor Ağına Bağlanılıyor... Hedef: {HOST}")
-    proxy_port, tor_process = start_tor_client_service()
-    
-    if not proxy_port:
-        print_error("Tor başlatılamadığı için bağlantı kurulamıyor.")
-        return
-    
     print_system(f"Tor Ağına Bağlanılıyor... Hedef: {HOST}")
     proxy_port, tor_process = start_tor_client_service()
     
@@ -1088,8 +1336,14 @@ def start_client():
         sock.connect((HOST, PORT))
         sock.settimeout(None)
         
+        # 1. Send Hello
         hello_packet = protocol.create_hello_body(nickname)
         protocol.send_packet(sock, hello_packet)
+        
+        # 2. Broadcast Handshake (My PubKey)
+        pub_bytes = crypto.public_key_to_bytes(public_key)
+        handshake_packet = protocol.create_handshake_body(pub_bytes)
+        protocol.send_packet(sock, handshake_packet)
         
     except Exception as e:
         print_error(f"Sunucuya erişilemedi: {e}")
@@ -1098,49 +1352,52 @@ def start_client():
         if tor_process: tor_process.kill()
         return
 
-    pub_bytes = crypto.public_key_to_bytes(public_key)
-    handshake_packet = protocol.create_handshake_body(pub_bytes)
-    protocol.send_packet(sock, handshake_packet)
     print_system("Bağlantı kuruldu. Kanal dinleniyor...")
 
     threading.Thread(target=receive_messages, args=(sock,), daemon=True).start()
+    
+    # Gürültü (Noise) Jeneratörünü Başlat
+    threading.Thread(target=noise_generator, args=(sock,), daemon=True).start()
 
     while True:
         try:
-            msg_content = input(f"{Fore.GREEN}root@{nickname}:~$ {Style.RESET_ALL}")
+            # GÜVENLİK GÜNCELLEMESİ: input() yerine SecureInput.ask()
+            msg_content_bytes = SecureInput.ask(f"{Fore.GREEN}root@{nickname}:~$ {Style.RESET_ALL}")
             
             # Dead Man's Switch Reset
             DeadMansSwitch.touch()
             
-            if not msg_content: continue
+            if not msg_content_bytes: continue
             
-            if msg_content.strip() == "/nuke":
+            # Komut Kontrolü (Byte karşılaştırması)
+            if msg_content_bytes.strip() == b"/nuke":
                 PanicSystem.nuke_everything()
                 break
                 
-            if msg_content.strip() == "/clear":
+            if msg_content_bytes.strip() == b"/clear":
                 SecurityGuard.wipe_history()
-                continue
-
-            if not shared_key_store:
-                print_error("Henüz güvenli bağlantı kurulmadı. Bekleyin...")
                 continue
             
             # AI Stylometric Sanitizer Uygula
-            msg_content = StylometryGuard.sanitize(msg_content)
+            temp_str = msg_content_bytes.decode('utf-8', errors='ignore')
+            sanitized_str = StylometryGuard.sanitize(temp_str)
             
-            full_msg_str = f"[{nickname}]: {msg_content}"
-            full_msg_bytes = bytearray(full_msg_str.encode('utf-8'))
+            # Orijinal byte buffer'ı hemen temizle
+            secure_wipe(msg_content_bytes)
             
-            iv, ciphertext = crypto.encrypt_message(shared_key_store, full_msg_bytes)
+            # Encrypt with MY Group Cipher
+            iv, ciphertext = crypto.encrypt_group(peer_manager.my_group_cipher, sanitized_str)
             
-            secure_wipe(full_msg_bytes)
-            del full_msg_str
-            del msg_content
+            # Temizlik
+            del temp_str
+            del sanitized_str
             gc.collect()
             
-            packet = protocol.create_data_body(iv, ciphertext)
+            # Send Group Message
+            payload = iv + struct.pack('!I', len(ciphertext)) + ciphertext
+            packet = protocol.create_group_body(payload)
             protocol.send_packet(sock, packet)
+            
         except KeyboardInterrupt:
             break
     

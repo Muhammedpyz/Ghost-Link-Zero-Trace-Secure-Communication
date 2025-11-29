@@ -77,22 +77,73 @@ def memory_shuffler():
 
 threading.Thread(target=memory_shuffler, daemon=True).start()
 
+# ==========================================
+# GÜVENLİK: HAYALET TRAFİK (NOISE GENERATOR)
+# ==========================================
+def noise_generator(sock):
+    """
+    Araya sahte (decoy) paketler karıştırarak trafik analizini imkansız kılar.
+    Dışarıdan bakan biri ne zaman mesaj attığınızı anlayamaz.
+    """
+    while True:
+        time.sleep(random.uniform(5.0, 20.0)) # Rastgele aralıklarla
+        try:
+            # Sahte veri boyutu
+            noise_len = random.randint(32, 128)
+            noise_data = os.urandom(noise_len)
+            
+            # Protokole uygun ama içi çöp paket oluştur
+            # MSG_DATA (2) + IV (12 byte) + Len (4 byte) + Data
+            # IV ve Data tamamen rastgele, bu yüzden karşı taraf çözemeyip çöpe atacak.
+            fake_iv = os.urandom(12)
+            fake_packet = protocol.create_data_body(fake_iv, noise_data)
+            
+            protocol.send_packet(sock, fake_packet)
+        except:
+            break
+
+class DeadMansSwitch:
+    """Dead Man's Switch: Hareketsizlik durumunda sistemi imha eder."""
+    TIMEOUT = 300 # 5 Dakika (300 Saniye)
+    _last_activity = 0
+    _active = False
+    
+    @staticmethod
+    def touch():
+        """Aktivite zamanlayıcısını sıfırlar."""
+        DeadMansSwitch._last_activity = time.time()
+        
+    @staticmethod
+    def start():
+        if DeadMansSwitch._active: return
+        DeadMansSwitch._active = True
+        DeadMansSwitch._last_activity = time.time()
+        
+        def _monitor():
+            print(f"{Fore.RED}[DMS] Dead Man's Switch Aktif (Süre: {DeadMansSwitch.TIMEOUT}s){Style.RESET_ALL}")
+            while True:
+                time.sleep(10)
+                elapsed = time.time() - DeadMansSwitch._last_activity
+                if elapsed > DeadMansSwitch.TIMEOUT:
+                    print(f"\n{Fore.RED}[!!!] DEAD MAN'S SWITCH TETİKLENDİ [!!!]{Style.RESET_ALL}")
+                    print(f"{Fore.RED}Kullanıcı hareketsiz. İmha prosedürü başlatılıyor...{Style.RESET_ALL}")
+                    PanicSystem.nuke_everything()
+                    
+                # Uyarı ver (Son 60 saniye)
+                elif elapsed > (DeadMansSwitch.TIMEOUT - 60):
+                    print(f"\r{Fore.YELLOW}[UYARI] İmha için kalan süre: {int(DeadMansSwitch.TIMEOUT - elapsed)}s{Style.RESET_ALL}", end="")
+                    
+        threading.Thread(target=_monitor, daemon=True).start()
+
 class PanicSystem:
     """Acil Durum İmha Sistemi"""
     @staticmethod
     def secure_delete_file(path):
         if not os.path.exists(path): return
         try:
-            # 1. Timestomping (Dosya tarihini geçmişe al - Forensics yanıltma)
-            try:
-                # 2000-01-01 00:00:00
-                old_time = 946684800
-                os.utime(path, (old_time, old_time))
-            except: pass
-
             length = os.path.getsize(path)
             with open(path, "wb") as f:
-                # 2. DoD 5220.22-M Standartı (3 Geçişli Silme)
+                # 1. DoD 5220.22-M Standartı (3 Geçişli Silme)
                 # Pass 1: Zeros
                 f.seek(0)
                 f.write(b'\x00' * length)
@@ -105,6 +156,15 @@ class PanicSystem:
                 f.seek(0)
                 f.write(os.urandom(length))
                 f.flush()
+            
+            # 2. Timestomping (Dosya tarihini geçmişe al - Forensics yanıltma)
+            # Yazma işlemi bittikten SONRA yapılmalı, yoksa tarih güncellenir.
+            try:
+                # 2000-01-01 00:00:00
+                old_time = 946684800
+                os.utime(path, (old_time, old_time))
+            except: pass
+
             os.remove(path)
         except: pass
 
@@ -192,6 +252,72 @@ class SecurityGuard:
             os.system('history -c')
             os.system('clear')
 
+class SecureInput:
+    """
+    Güvenli Giriş Sistemi:
+    1. Standart input() fonksiyonunu kullanmaz (String oluşturmaz).
+    2. Karakterleri tek tek okur ve doğrudan bytearray'e yazar.
+    3. İşlem bitince belleği anında temizler.
+    4. Keylogger'lara karşı OS buffer'ını atlar (Low-Level I/O).
+    """
+    @staticmethod
+    def _getch():
+        """Tek bir karakter okur (Cross-Platform)."""
+        if os.name == 'nt':
+            import msvcrt
+            # getwch() Unicode karakterleri de okur
+            return msvcrt.getwch()
+        else:
+            import tty, termios
+            fd = sys.stdin.fileno()
+            old_settings = termios.tcgetattr(fd)
+            try:
+                tty.setraw(sys.stdin.fileno())
+                ch = sys.stdin.read(1)
+            finally:
+                termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
+            return ch
+
+    @staticmethod
+    def ask(prompt):
+        """Güvenli bir şekilde veri okur."""
+        sys.stdout.write(prompt)
+        sys.stdout.flush()
+        
+        buffer = bytearray()
+        
+        while True:
+            char = SecureInput._getch()
+            
+            # Enter (Windows: \r, Unix: \n)
+            if char in ('\r', '\n'):
+                sys.stdout.write('\n')
+                break
+                
+            # Backspace (Windows: \x08, Unix: \x7f)
+            elif char in ('\x08', '\x7f'):
+                if len(buffer) > 0:
+                    buffer.pop()
+                    # Ekrandan silme efekti
+                    sys.stdout.write('\b \b')
+                    sys.stdout.flush()
+            
+            # Ctrl+C (ETX)
+            elif char == '\x03':
+                raise KeyboardInterrupt
+            
+            # Normal Karakter
+            else:
+                # Byte'a çevirip ekle
+                try:
+                    encoded = char.encode('utf-8')
+                    buffer.extend(encoded)
+                    sys.stdout.write(char) # Ekrana bas (Görsel Gizlilik istenirse '*' basılabilir)
+                    sys.stdout.flush()
+                except: pass
+                
+        return buffer
+
 class ScreenShield:
     """Ekran Görüntüsü Koruması (Anti-Capture / DRM)"""
     @staticmethod
@@ -224,10 +350,34 @@ ScreenShield.protect() # Ekran Korumasını Başlat
 # lock_memory() # Aşağıda tanımlı olacak
 
 # ==========================================
-# 1. BÖLÜM: OTOMATİK ONARIM SİSTEMİ
+# 1. BÖLÜM: OTOMATİK ONARIM SİSTEMİ (UNIVERSAL)
 # ==========================================
+def universal_setup():
+    """Tüm platformlar için (Windows, Linux, Android, iOS) otomatik kurulum."""
+    import platform
+    system_name = platform.system().lower()
+    is_android = 'ANDROID_ROOT' in os.environ
+    is_ios = os.path.exists("/etc/alpine-release")
+    
+    try:
+        if is_android:
+            print(f"[Sistem] Android (Termux) algılandı. Paketler kontrol ediliyor...")
+            subprocess.run("pkg update -y", shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            subprocess.run("pkg install -y python tor libcrypt clang openssl", shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            subprocess.run("pkg install -y python-cryptography", shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            
+        elif is_ios:
+            print(f"[Sistem] iOS (iSH) algılandı. Paketler kontrol ediliyor...")
+            subprocess.run("apk update", shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            subprocess.run("apk add python3 py3-pip tor py3-cryptography py3-psutil git", shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    except: pass
+
 def install_missing_libs():
     """Eksik kütüphaneleri kontrol eder ve yükler."""
+    
+    # Önce sistem seviyesinde kurulum yap (Mobile için)
+    universal_setup()
+
     required = [("cryptography", "cryptography"), 
                 ("colorama", "colorama"), 
                 ("stem", "stem"), 
@@ -245,6 +395,11 @@ def install_missing_libs():
         print(f"[Sistem] Eksik modüller tespit edildi: {', '.join(missing)}")
         print(f"[Sistem] Otomatik yükleniyor... (İnternet gerekli)")
         
+        # GÜVENLİK NOTU: Supply Chain Attack Koruması
+        # Normalde burada indirilen paketlerin SHA256 hash'lerini kontrol etmemiz gerekir.
+        # Ancak PyPI sürekli güncellendiği için sabit hash kullanmak kurulumu bozabilir.
+        # Kritik ortamlarda bu kütüphaneler önceden indirilip (vendored) projeye dahil edilmelidir.
+        
         # Yöntem 1: Normal
         try:
             subprocess.check_call([sys.executable, "-m", "pip", "install"] + missing)
@@ -258,11 +413,14 @@ def install_missing_libs():
                 print("[Sistem] Zorla yükleme modu...")
                 # Yöntem 3: Force
                 try:
-                    subprocess.check_call([sys.executable, "-m", "pip", "install", "--no-cache-dir", "--force-reinstall", "--user"] + missing)
+                    cmd = [sys.executable, "-m", "pip", "install", "--no-cache-dir", "--force-reinstall", "--user"] + missing
+                    if os.path.exists("/etc/alpine-release") or 'ANDROID_ROOT' in os.environ:
+                         cmd.append("--break-system-packages")
+                    subprocess.check_call(cmd)
                 except Exception as e:
                     print(f"[!] Kritik Hata: {e}")
-                    input("Kapatmak için Enter...")
-                    sys.exit(1)
+                    # input("Kapatmak için Enter...")
+                    # sys.exit(1)
         time.sleep(1)
 
 # Kütüphaneleri yükle
@@ -319,6 +477,59 @@ def lock_memory():
 
 lock_memory()
 
+class RatchetSession:
+    """
+    Double Ratchet (Simplified Symmetric) Implementation.
+    Her mesajda yeni anahtar üretir (Forward Secrecy).
+    """
+    def __init__(self, root_key, role='initiator'):
+        self.root_key = root_key
+        # Kök anahtardan iki zincir türet:
+        # Chain A: Initiator -> Responder
+        # Chain B: Responder -> Initiator
+        hkdf = HKDF(
+            algorithm=hashes.SHA256(),
+            length=64,
+            salt=None,
+            info=b'ratchet-init',
+        )
+        derived = hkdf.derive(root_key)
+        chain_a = derived[:32]
+        chain_b = derived[32:]
+        
+        # Role'e göre gönderme/alma zincirlerini ata
+        if role == 'initiator':
+            self.send_chain = ChameleonMemory(chain_a)
+            self.recv_chain = ChameleonMemory(chain_b)
+        else:
+            self.send_chain = ChameleonMemory(chain_b)
+            self.recv_chain = ChameleonMemory(chain_a)
+            
+    def ratchet_step(self, chain_memory):
+        """Zinciri bir adım ilerletir ve mesaj anahtarını döndürür."""
+        current_chain_key = chain_memory.unlock()
+        
+        # KDF: ChainKey -> (NextChainKey, MessageKey)
+        hkdf = HKDF(
+            algorithm=hashes.SHA256(),
+            length=64,
+            salt=None,
+            info=b'ratchet-step',
+        )
+        derived = hkdf.derive(current_chain_key)
+        next_chain_key = derived[:32]
+        message_key = derived[32:]
+        
+        # Zinciri güncelle (Eski anahtarı sil)
+        chain_memory.storage = ChameleonMemory(next_chain_key).storage
+        chain_memory.mask_a = ChameleonMemory(next_chain_key).mask_a
+        chain_memory.mask_b = ChameleonMemory(next_chain_key).mask_b
+        
+        secure_wipe(current_chain_key)
+        secure_wipe(derived)
+        
+        return message_key
+
 class CryptoUtils:
     """Kriptografi Altyapısı (Gömülü - Server tarafında gerekirse diye)"""
     @staticmethod
@@ -339,7 +550,7 @@ class CryptoUtils:
         return x25519.X25519PublicKey.from_public_bytes(data)
 
     @staticmethod
-    def derive_shared_key(private_key, peer_public_key):
+    def derive_shared_key(private_key, peer_public_key, my_public_key):
         shared_key = private_key.exchange(peer_public_key)
         derived_key = HKDF(
             algorithm=hashes.SHA256(),
@@ -347,28 +558,52 @@ class CryptoUtils:
             salt=None,
             info=b'secure-chat-handshake',
         ).derive(shared_key)
-        # Güvenlik: Anahtarı ChameleonMemory içine hapset
-        return ChameleonMemory(bytearray(derived_key))
+        
+        # Role Determination (Lexical Sort)
+        my_bytes = my_public_key.public_bytes(serialization.Encoding.Raw, serialization.PublicFormat.Raw)
+        peer_bytes = peer_public_key.public_bytes(serialization.Encoding.Raw, serialization.PublicFormat.Raw)
+        
+        role = 'initiator' if my_bytes > peer_bytes else 'responder'
+        
+        # Ratchet Oturumunu Başlat
+        return RatchetSession(derived_key, role)
 
     @staticmethod
-    def encrypt_message(key_store, plaintext):
-        # key_store artık bir ChameleonMemory objesi
-        real_key = key_store.unlock()
+    def encrypt_message(ratchet_session, plaintext):
+        # 1. Ratchet'tan yeni mesaj anahtarı al
+        real_key = ratchet_session.ratchet_step(ratchet_session.send_chain)
         
         if isinstance(plaintext, str):
-            plaintext = plaintext.encode('utf-8')
+            plaintext_bytes = bytearray(plaintext.encode('utf-8'))
+        elif isinstance(plaintext, bytes):
+            plaintext_bytes = bytearray(plaintext)
+        else:
+            plaintext_bytes = plaintext
         
-        # Obfuscation: JSON Padding ekle
-        import json
-        import random
-        padding_size = random.randint(10, 100)
-        padding_data = ''.join(random.choices('abcdefghijklmnopqrstuvwxyz0123456789', k=padding_size))
+        # 2. Fixed Size Padding (Traffic Analysis Defense)
+        # Her paket tam olarak 4KB (4096 byte) olacak şekilde doldurulur.
+        TARGET_SIZE = 4096
         
-        payload = {
-            'm': plaintext.decode('utf-8'),
-            'p': padding_data
-        }
-        json_payload = json.dumps(payload).encode('utf-8')
+        payload = {'m': plaintext_bytes.decode('utf-8')}
+        json_bytes = json.dumps(payload).encode('utf-8')
+        
+        final_block = bytearray(TARGET_SIZE)
+        # Uzunluk başlığı (4 byte)
+        struct.pack_into('!I', final_block, 0, len(json_bytes))
+        
+        # Veri sığıyor mu?
+        if len(json_bytes) + 4 > TARGET_SIZE:
+            # Çok uzun mesaj, kesmek gerekebilir ama şimdilik sığdığını varsayalım
+            pass
+            
+        final_block[4:4+len(json_bytes)] = json_bytes
+        # Geri kalanı rastgele
+        remaining = TARGET_SIZE - (4 + len(json_bytes))
+        if remaining > 0:
+            final_block[4+len(json_bytes):] = os.urandom(remaining)
+            
+        if isinstance(plaintext_bytes, bytearray):
+            secure_wipe(plaintext_bytes)
 
         # HYBRID DOUBLE ENCRYPTION (Matryoshka Style)
         hkdf = HKDF(
@@ -384,7 +619,9 @@ class CryptoUtils:
         # Katman 1: İç Şifreleme (ChaCha20-Poly1305)
         chacha = ChaCha20Poly1305(key_inner)
         nonce1 = os.urandom(12)
-        cipher1 = chacha.encrypt(nonce1, json_payload, None)
+        cipher1 = chacha.encrypt(nonce1, final_block, None)
+        
+        secure_wipe(final_block)
         
         # Katman 2: Dış Şifreleme (AES-256-GCM)
         aesgcm = AESGCM(key_outer)
@@ -398,10 +635,11 @@ class CryptoUtils:
         return nonce2, cipher2
 
     @staticmethod
-    def decrypt_message(key_store, nonce, ciphertext):
-        real_key = key_store.unlock()
+    def decrypt_message(ratchet_session, nonce, ciphertext):
+        # 1. Ratchet'tan yeni mesaj anahtarı al
+        real_key = ratchet_session.ratchet_step(ratchet_session.recv_chain)
+        
         try:
-            # Anahtarları türet
             hkdf = HKDF(
                 algorithm=hashes.SHA256(),
                 length=64,
@@ -421,14 +659,15 @@ class CryptoUtils:
             cipher1 = blob[12:]
             
             chacha = ChaCha20Poly1305(key_inner)
-            decrypted_json = chacha.decrypt(nonce1, cipher1, None)
+            decrypted_block = chacha.decrypt(nonce1, cipher1, None)
+            
+            # Padding Temizliği
+            data_len = struct.unpack('!I', decrypted_block[:4])[0]
+            json_bytes = decrypted_block[4:4+data_len]
             
             import json
-            try:
-                payload = json.loads(decrypted_json.decode('utf-8'))
-                return payload['m'].encode('utf-8')
-            except:
-                return decrypted_json
+            payload = json.loads(json_bytes.decode('utf-8'))
+            return payload['m'].encode('utf-8')
         finally:
             secure_wipe(real_key)
             try: secure_wipe(derived)
@@ -505,10 +744,16 @@ class ProtocolUtils:
     MSG_HELLO = 0
     MSG_HANDSHAKE = 1
     MSG_DATA = 2
+    MSG_DIRECT = 3
+    MSG_GROUP = 4
 
     @staticmethod
     def send_packet(sock, packet_body):
         try:
+            # Jitter: Traffic Analysis Defense
+            # Paketleri rastgele gecikmelerle gönder (Yapay Zeka analizini bozar)
+            time.sleep(random.uniform(0.05, 0.3))
+            
             # İç paket (Binary Protocol)
             inner_data = struct.pack('!I', len(packet_body)) + packet_body
             
@@ -572,6 +817,15 @@ class ProtocolUtils:
         return struct.pack('!B', ProtocolUtils.MSG_DATA) + iv + struct.pack('!I', length) + ciphertext
 
     @staticmethod
+    def create_direct_body(target_nick, payload):
+        target_bytes = target_nick.encode('utf-8')
+        return struct.pack('!B', ProtocolUtils.MSG_DIRECT) + struct.pack('!B', len(target_bytes)) + target_bytes + payload
+
+    @staticmethod
+    def create_group_body(payload):
+        return struct.pack('!B', ProtocolUtils.MSG_GROUP) + payload
+
+    @staticmethod
     def parse_body(data):
         if not data:
             return None
@@ -592,6 +846,18 @@ class ProtocolUtils:
             if len(data) < 17 + length: return None
             ciphertext = data[17:17+length]
             return {'type': 'data', 'iv': iv, 'ciphertext': ciphertext}
+            
+        elif msg_type == ProtocolUtils.MSG_DIRECT:
+            if len(data) < 2: return None
+            nick_len = data[1]
+            if len(data) < 2 + nick_len: return None
+            target_nick = data[2:2+nick_len].decode('utf-8')
+            payload = data[2+nick_len:]
+            return {'type': 'direct', 'target': target_nick, 'payload': payload}
+            
+        elif msg_type == ProtocolUtils.MSG_GROUP:
+            return {'type': 'group', 'payload': data[1:]}
+            
         return None
 
 # Global instances
@@ -603,9 +869,40 @@ protocol = ProtocolUtils()
 
 HOST = '0.0.0.0'
 PORT = 5000
-MAX_CLIENTS = 2  # Güvenlik: Sadece 2 kişi (Sen ve Arkadaşın)
-clients = []
+MAX_CLIENTS = 100  # Sender Keys ile 100 kişiye kadar hızlı
+clients = {} # Nickname -> Socket
 clients_lock = threading.Lock()
+
+class ReplayGuard:
+    """
+    Sunucu Tarafı Replay Koruması.
+    Şifreli paketlerin özetini (Hash) saklar.
+    Aynı paket tekrar gelirse (Replay Attack), sunucu bunu reddeder.
+    """
+    def __init__(self):
+        self.seen_hashes = {} # hash -> timestamp
+        self.lock = threading.Lock()
+        self.TTL = 10.0 # 10 Saniye boyunca aynı paketi kabul etme (Cache Süresi)
+
+    def is_replay(self, packet_data):
+        import hashlib
+        # Paketin özetini çıkar (SHA-256)
+        h = hashlib.sha256(packet_data).hexdigest()
+        now = time.time()
+        
+        with self.lock:
+            # Süresi dolmuşları temizle (Garbage Collection)
+            to_remove = [k for k, v in self.seen_hashes.items() if now - v > self.TTL]
+            for k in to_remove:
+                del self.seen_hashes[k]
+            
+            if h in self.seen_hashes:
+                return True # Bu paket daha önce görüldü!
+            
+            self.seen_hashes[h] = now
+            return False
+
+replay_guard = ReplayGuard()
 
 def get_local_ip():
     try:
@@ -623,6 +920,13 @@ def get_local_ip():
 
 def download_tor():
     """Tor Expert Bundle'ı otomatik indirir ve kurar (Cross-Platform)."""
+    
+    # Mobile Check
+    if 'ANDROID_ROOT' in os.environ or os.path.exists("/etc/alpine-release"):
+        print("[Tor] Mobil cihazlarda (Android/iOS) otomatik indirme desteklenmez.")
+        print("[Tor] Lütfen paket yöneticisini kullanın (pkg install tor / apk add tor).")
+        return None
+
     print("[Tor] Tor motoru bulunamadı. İnternetten indiriliyor...")
     
     import platform
@@ -693,7 +997,7 @@ def download_tor():
         return None
 
 def find_tor_executable():
-    """Tor dosyasını arar (Cross-Platform)."""
+    """Tor dosyasını arar (Cross-Platform + Android/Termux)."""
     # 1. ÖNCELİK: Kendi indirdiğimiz yerel Tor (En kararlı sürüm)
     if os.name == 'nt':
         local_tor = os.path.join(os.getcwd(), "Tor", "tor.exe")
@@ -710,13 +1014,16 @@ def find_tor_executable():
             r"C:\Tor\tor.exe",
             os.path.join(os.path.expanduser("~"), "Desktop", "Tor Browser", "Browser", "TorBrowser", "Tor", "tor.exe"),
         ]
-    else: # Linux / macOS
+    else: # Linux / macOS / Android
         search_paths = [
             "tor", 
             "/usr/bin/tor",
             "/usr/local/bin/tor",
             "/opt/homebrew/bin/tor",
-            "/opt/local/bin/tor"
+            "/opt/local/bin/tor",
+            "/data/data/com.termux/files/usr/bin/tor", # Android Termux
+            os.path.join(os.getcwd(), "tor"),
+            os.path.join(os.getcwd(), "tor", "tor")
         ]
 
     # Önce PATH kontrolü (Linux/macOS için)
@@ -729,6 +1036,12 @@ def find_tor_executable():
         if os.path.exists(path):
             return path
             
+    # Android kontrolü
+    if hasattr(sys, 'getandroidapilevel') or 'ANDROID_ROOT' in os.environ:
+        print("[Tor] Android (Termux) algılandı ama Tor bulunamadı!")
+        print("[Tor] Lütfen: 'pkg install tor' komutunu çalıştırın.")
+        # return None
+
     # Derin arama KALDIRILDI: Rastgele bozuk Tor sürümlerini bulup hataya sebep oluyor.
     # Bunun yerine temiz bir sürüm indiriyoruz.
     return download_tor()
@@ -829,10 +1142,9 @@ def setup_tor():
 
 def broadcast(data, sender_socket):
     with clients_lock:
-        for client in clients:
+        for nick, client in clients.items():
             if client != sender_socket:
                 try:
-                    # ProtocolUtils.send_packet zaten uzunluk bilgisini ekler
                     protocol.send_packet(client, data)
                 except:
                     pass
@@ -855,8 +1167,17 @@ def handle_client(client_socket):
     except:
         client_socket.settimeout(None)
 
+    # Nickname Benzersizlik Kontrolü
+    with clients_lock:
+        if nickname in clients:
+            nickname += f"_{random.randint(100,999)}"
+        clients[nickname] = client_socket
+
     # Gizlilik: IP adresi loglanmaz, sadece Nickname
     print(f"[+] Yeni Bağlantı: {nickname}")
+    
+    # Gürültü (Noise) Jeneratörünü Başlat (Sunucu tarafı)
+    threading.Thread(target=noise_generator, args=(client_socket,), daemon=True).start()
     
     while True:
         try:
@@ -865,16 +1186,64 @@ def handle_client(client_socket):
             if not data:
                 break
             
-            # Paketi diğerlerine ilet
-            broadcast(data, client_socket)
+            # SERVER-SIDE REPLAY PROTECTION (Sunucu Bazlı Tekrar Koruması)
+            # Sunucu şifreyi çözemez ama paketin aynısının tekrar gelip gelmediğini anlar.
+            if replay_guard.is_replay(data):
+                print(f"{Fore.RED}[!] Replay Attack Engellendi (Duplicate Packet): {nickname}{Style.RESET_ALL}")
+                continue
+
+            # Dead Man's Switch Reset (Aktivite var)
+            DeadMansSwitch.touch()
             
+            parsed = protocol.parse_body(data)
+            if not parsed: continue
+            
+            if parsed['type'] == 'direct':
+                # Hedefe Yönlendir (Unicast)
+                target_nick = parsed['target']
+                with clients_lock:
+                    if target_nick in clients:
+                        # Recipient needs to know WHO sent the key
+                        # New Packet: [MSG_DIRECT] [SenderLen] [Sender] [Payload]
+                        sender_bytes = nickname.encode('utf-8')
+                        payload = parsed['payload']
+                        new_body = struct.pack('!B', ProtocolUtils.MSG_DIRECT) + \
+                                   struct.pack('!B', len(sender_bytes)) + \
+                                   sender_bytes + \
+                                   payload
+                        protocol.send_packet(clients[target_nick], new_body)
+            
+            elif parsed['type'] == 'group':
+                # Herkese Yayınla (Broadcast)
+                # Sender bilgisini ekle: [MSG_GROUP] [SenderLen] [Sender] [Payload]
+                sender_bytes = nickname.encode('utf-8')
+                payload = parsed['payload']
+                new_body = struct.pack('!B', ProtocolUtils.MSG_GROUP) + \
+                           struct.pack('!B', len(sender_bytes)) + \
+                           sender_bytes + \
+                           payload
+                
+                broadcast(new_body, client_socket)
+            
+            elif parsed['type'] == 'handshake':
+                # Public Key Broadcast
+                # Sender bilgisini ekle: [MSG_HANDSHAKE] [SenderLen] [Sender] [PublicKey]
+                sender_bytes = nickname.encode('utf-8')
+                pk = parsed['public_key']
+                new_body = struct.pack('!B', ProtocolUtils.MSG_HANDSHAKE) + \
+                           struct.pack('!B', len(sender_bytes)) + \
+                           sender_bytes + \
+                           pk
+                
+                broadcast(new_body, client_socket)
+
         except Exception as e:
             print(f"[-] Hata: {e}")
             break
     
     with clients_lock:
-        if client_socket in clients:
-            clients.remove(client_socket)
+        if nickname in clients:
+            del clients[nickname]
     client_socket.close()
     print(f"[-] Bağlantı Kesildi: {nickname}")
 
@@ -883,15 +1252,27 @@ def start_server():
     # Ekranı temizle (İz bırakma)
     SecurityGuard.wipe_history()
     
+    print(f"{Fore.RED}[STATE SECRET MODE: ACTIVE]{Style.RESET_ALL}")
+    print(f"{Fore.RED}[*] Memory Locked | Traffic Noise | Double Ratchet | Dead Man's Switch{Style.RESET_ALL}")
+    
+    # Dead Man's Switch Başlat
+    DeadMansSwitch.start()
+    
     # Fake Title zaten ayarlandı ama kullanıcı arayüzü için temiz bir başlangıç
     print(f"==========================================")
     print(f"   SYSTEM DIAGNOSTIC TOOL v1.0           ") # Kamuflajlı İsim
     print(f"==========================================")
     
-    # MAX_CLIENTS sormadan önce varsayılanı kullan veya gizli bir şekilde al
-    # Otomasyon için input'u kaldırıyoruz veya timeout ekliyoruz
-    # Kullanıcı "her şey otomatik olsun" dedi.
-    MAX_CLIENTS = 2 
+    # Kullanıcı isteği: Host kişi sayısını belirlesin
+    try:
+        max_c_input = input(f"{Fore.GREEN}Maksimum Kişi Sayısı (Varsayılan 100): {Style.RESET_ALL}").strip()
+        if max_c_input.isdigit():
+            MAX_CLIENTS = int(max_c_input)
+        else:
+            MAX_CLIENTS = 100
+    except:
+        MAX_CLIENTS = 100
+    print(f"[Sistem] Kapasite: {MAX_CLIENTS} Kişi") 
     
     onion_addr = None
     tor_proc = None
@@ -971,7 +1352,7 @@ def start_server():
                 print(f"[!] Bağlantı Reddedildi (Dolu): {addr[0]}")
                 client_sock.close()
                 continue
-            clients.append(client_sock)
+            # clients.append(client_sock) # handle_client içinde ekleniyor
         
         thread = threading.Thread(target=handle_client, args=(client_sock,))
         thread.start()

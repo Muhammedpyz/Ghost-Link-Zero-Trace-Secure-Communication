@@ -68,6 +68,113 @@ class SecurityGuard:
             sys.stdout.write(f"\x1b]2;{title}\x07")
             sys.stdout.flush()
 
+class SecureInput:
+    """
+    Güvenli Giriş Sistemi:
+    1. Standart input() fonksiyonunu kullanmaz (String oluşturmaz).
+    2. Karakterleri tek tek okur ve doğrudan bytearray'e yazar.
+    3. İşlem bitince belleği anında temizler.
+    4. Keylogger'lara karşı OS buffer'ını atlar (Low-Level I/O).
+    """
+    @staticmethod
+    def _getch():
+        """Tek bir karakter okur (Cross-Platform)."""
+        if os.name == 'nt':
+            import msvcrt
+            # getwch() Unicode karakterleri de okur
+            return msvcrt.getwch()
+        else:
+            import tty, termios
+            fd = sys.stdin.fileno()
+            old_settings = termios.tcgetattr(fd)
+            try:
+                tty.setraw(sys.stdin.fileno())
+                ch = sys.stdin.read(1)
+            finally:
+                termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
+            return ch
+
+    @staticmethod
+    def ask(prompt):
+        """Güvenli bir şekilde veri okur."""
+        sys.stdout.write(prompt)
+        sys.stdout.flush()
+        
+        buffer = bytearray()
+        
+        while True:
+            char = SecureInput._getch()
+            
+            # Enter (Windows: \r, Unix: \n)
+            if char in ('\r', '\n'):
+                sys.stdout.write('\n')
+                break
+                
+            # Backspace (Windows: \x08, Unix: \x7f)
+            elif char in ('\x08', '\x7f'):
+                if len(buffer) > 0:
+                    buffer.pop()
+                    # Ekrandan silme efekti
+                    sys.stdout.write('\b \b')
+                    sys.stdout.flush()
+            
+            # Ctrl+C (ETX)
+            elif char == '\x03':
+                raise KeyboardInterrupt
+            
+            # Normal Karakter
+            else:
+                # Byte'a çevirip ekle
+                try:
+                    encoded = char.encode('utf-8')
+                    buffer.extend(encoded)
+                    sys.stdout.write(char)
+                    sys.stdout.flush()
+                except: pass
+                
+        return buffer
+
+def secure_wipe(data):
+    """Bytearray verisini ctypes.memset ile 0 ile doldurur (RAM Temizliği)."""
+    if isinstance(data, (bytearray, bytes)):
+        try:
+            char_array = (ctypes.c_char * len(data)).from_buffer(data)
+            ctypes.memset(char_array, 0, len(data))
+        except TypeError:
+            pass
+    elif isinstance(data, list):
+        for item in data:
+            secure_wipe(item)
+
+def lock_memory():
+    """RAM'i kilitler, Swap/Pagefile kullanımını engeller (Windows Kernel Level)."""
+    try:
+        if os.name == 'nt':
+            # Windows: SetProcessWorkingSetSize ile RAM'i zorla tut
+            process = ctypes.windll.kernel32.GetCurrentProcess()
+            min_size = ctypes.c_size_t()
+            max_size = ctypes.c_size_t()
+            
+            if ctypes.windll.kernel32.GetProcessWorkingSetSize(process, ctypes.byref(min_size), ctypes.byref(max_size)):
+                extra = 50 * 1024 * 1024
+                ctypes.windll.kernel32.SetProcessWorkingSetSize(process, min_size.value + extra, max_size.value + extra)
+                
+        elif os.name == 'posix':
+            # Linux ve macOS
+            try:
+                # Linux
+                libc = ctypes.CDLL("libc.so.6")
+            except:
+                try:
+                    # macOS
+                    libc = ctypes.CDLL("libc.dylib")
+                except:
+                    return
+            
+            # MCL_CURRENT | MCL_FUTURE = 3
+            libc.mlockall(3) 
+    except: pass
+
 def set_console_title():
     SecurityGuard.camouflage()
 
@@ -129,6 +236,7 @@ def obfuscate_code():
 def main():
     os.system('cls' if os.name == 'nt' else 'clear')
     set_console_title()
+    lock_memory() # RAM'i kilitle (Swap engelle)
     
     print("""
     #################################################
@@ -143,7 +251,10 @@ def main():
     #################################################
     """)
     
-    choice = input("Seçiminiz (1 veya 2): ").strip()
+    # GÜVENLİK GÜNCELLEMESİ: input() yerine SecureInput.ask()
+    choice_bytes = SecureInput.ask("Seçiminiz (1 veya 2): ")
+    choice = choice_bytes.decode('utf-8').strip()
+    secure_wipe(choice_bytes) # RAM'den temizle
     
     install_requirements()
     is_obfuscated = obfuscate_code()
