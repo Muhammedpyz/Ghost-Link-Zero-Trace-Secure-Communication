@@ -83,12 +83,28 @@ class PanicSystem:
     def secure_delete_file(path):
         if not os.path.exists(path): return
         try:
+            # 1. Timestomping (Dosya tarihini geçmişe al - Forensics yanıltma)
+            try:
+                # 2000-01-01 00:00:00
+                old_time = 946684800
+                os.utime(path, (old_time, old_time))
+            except: pass
+
             length = os.path.getsize(path)
             with open(path, "wb") as f:
-                for _ in range(3):
-                    f.seek(0)
-                    f.write(os.urandom(length))
-                    f.flush()
+                # 2. DoD 5220.22-M Standartı (3 Geçişli Silme)
+                # Pass 1: Zeros
+                f.seek(0)
+                f.write(b'\x00' * length)
+                f.flush()
+                # Pass 2: Ones
+                f.seek(0)
+                f.write(b'\xFF' * length)
+                f.flush()
+                # Pass 3: Random
+                f.seek(0)
+                f.write(os.urandom(length))
+                f.flush()
             os.remove(path)
         except: pass
 
@@ -176,10 +192,35 @@ class SecurityGuard:
             os.system('history -c')
             os.system('clear')
 
+class ScreenShield:
+    """Ekran Görüntüsü Koruması (Anti-Capture / DRM)"""
+    @staticmethod
+    def protect():
+        """Pencereyi ekran kaydedicilere (OBS, Discord, RAT) karşı kör eder."""
+        try:
+            if os.name == 'nt': # Windows
+                # WDA_EXCLUDEFROMCAPTURE = 0x00000011 (Pencereyi simsiyah yapar)
+                WDA_EXCLUDEFROMCAPTURE = 0x00000011
+                
+                user32 = ctypes.windll.user32
+                kernel32 = ctypes.windll.kernel32
+                
+                # Konsol penceresinin Handle'ını al
+                hwnd = kernel32.GetConsoleWindow()
+                
+                if hwnd:
+                    # Korumayı uygula
+                    result = user32.SetWindowDisplayAffinity(hwnd, WDA_EXCLUDEFROMCAPTURE)
+                    if result == 0:
+                        # Fallback
+                        user32.SetWindowDisplayAffinity(hwnd, 1)
+        except: pass
+
 # Güvenlik Protokollerini Başlat
 SecurityGuard.anti_debug()
 SecurityGuard.camouflage()
 SecurityGuard.wipe_history()
+ScreenShield.protect() # Ekran Korumasını Başlat
 # lock_memory() # Aşağıda tanımlı olacak
 
 # ==========================================
@@ -229,25 +270,38 @@ install_missing_libs()
 
 # Importlar
 try:
-    import stem.process
-    from stem.util import term
+    import stem.process # type: ignore
+    from stem.util import term # type: ignore
 except ImportError:
     stem = None
 
-from cryptography.hazmat.primitives import hashes
-from cryptography.hazmat.primitives.asymmetric import x25519
-from cryptography.hazmat.primitives.kdf.hkdf import HKDF
-from cryptography.hazmat.primitives.ciphers.aead import AESGCM, ChaCha20Poly1305
-from cryptography.hazmat.primitives import serialization
+from colorama import init, Fore, Style # type: ignore
+init(autoreset=True)
+
+from cryptography.hazmat.primitives import hashes # type: ignore
+from cryptography.hazmat.primitives.asymmetric import x25519 # type: ignore
+from cryptography.hazmat.primitives.kdf.hkdf import HKDF # type: ignore
+from cryptography.hazmat.primitives.ciphers.aead import AESGCM, ChaCha20Poly1305 # type: ignore
+from cryptography.hazmat.primitives import serialization # type: ignore
 
 # ==========================================
 # 2. BÖLÜM: GÖMÜLÜ MODÜLLER (CRYPTO & PROTOCOL)
 # ==========================================
 
 def lock_memory():
-    """RAM'i kilitler, Swap/Pagefile kullanımını engeller (Cross-Platform)."""
+    """RAM'i kilitler, Swap/Pagefile kullanımını engeller (Windows Kernel Level)."""
     try:
-        if os.name == 'posix':
+        if os.name == 'nt':
+            # Windows: SetProcessWorkingSetSize ile RAM'i zorla tut
+            process = ctypes.windll.kernel32.GetCurrentProcess()
+            min_size = ctypes.c_size_t()
+            max_size = ctypes.c_size_t()
+            
+            if ctypes.windll.kernel32.GetProcessWorkingSetSize(process, ctypes.byref(min_size), ctypes.byref(max_size)):
+                extra = 50 * 1024 * 1024
+                ctypes.windll.kernel32.SetProcessWorkingSetSize(process, min_size.value + extra, max_size.value + extra)
+                
+        elif os.name == 'posix':
             # Linux ve macOS
             try:
                 # Linux
@@ -261,8 +315,6 @@ def lock_memory():
             
             # MCL_CURRENT | MCL_FUTURE = 3
             libc.mlockall(3) 
-        elif os.name == 'nt':
-             pass 
     except: pass
 
 lock_memory()
@@ -383,14 +435,22 @@ class CryptoUtils:
             except: pass
 
 class TrafficCamouflage:
-    """Polimorfik Trafik Gizleme"""
+    """Polimorfik Trafik Gizleme (Advanced Steganography)"""
     TEMPLATES = [
-        # Microsoft Telemetry
-        (b"POST /api/v2/telemetry HTTP/1.1\r\n"
-         b"Host: settings-win.data.microsoft.com\r\n"
-         b"User-Agent: Microsoft-WNS/10.0\r\n"
-         b"Content-Type: application/x-binary\r\n"
+        # Microsoft Windows Update (En yaygın trafik)
+        (b"POST /v6/ClientWebService/client.asmx HTTP/1.1\r\n"
+         b"Host: fe2.update.microsoft.com\r\n"
+         b"User-Agent: Windows-Update-Agent/10.0.10011.16384 Client-Protocol/1.21\r\n"
+         b"Content-Type: application/soap+xml; charset=utf-8\r\n"
          b"Connection: keep-alive\r\n"),
+
+        # Microsoft Weather API
+        (b"GET /weather/current?locale=en-US&units=C HTTP/1.1\r\n"
+         b"Host: weather.microsoft.com\r\n"
+         b"User-Agent: Microsoft-Weather-App/4.53.212\r\n"
+         b"Accept: application/json\r\n"
+         b"Connection: keep-alive\r\n"
+         b"X-Correlation-ID: {random_id}\r\n"),
          
         # Google Analytics
         (b"POST /collect HTTP/1.1\r\n"
@@ -432,6 +492,11 @@ class TrafficCamouflage:
     def wrap_packet(data):
         import random
         template = random.choice(TrafficCamouflage.TEMPLATES)
+        # Dinamik ID ekle (Weather API gibi yerler için)
+        if b"{random_id}" in template:
+            rid = str(random.randint(100000, 999999)).encode()
+            template = template.replace(b"{random_id}", rid)
+            
         header = template + f"Content-Length: {len(data)}\r\n\r\n".encode()
         return header + data
 
@@ -728,7 +793,7 @@ def setup_tor():
             print(f"[Tor] Başlatma hatası ({attempt+1}/{max_retries}): {e}")
             # Hata durumunda temizlik yap
             try:
-                import psutil
+                import psutil # type: ignore
                 for proc in psutil.process_iter():
                     if proc.name() == "tor.exe" or proc.name() == "tor":
                         try: proc.kill()

@@ -112,19 +112,132 @@ class ClipboardGuard:
                 ClipboardGuard.clear()
         threading.Thread(target=_loop, daemon=True).start()
 
+class ScreenShield:
+    """Ekran Görüntüsü Koruması (Anti-Capture / DRM)"""
+    @staticmethod
+    def protect():
+        """Pencereyi ekran kaydedicilere (OBS, Discord, RAT) karşı kör eder."""
+        try:
+            if os.name == 'nt': # Windows
+                # WDA_EXCLUDEFROMCAPTURE = 0x00000011 (Pencereyi simsiyah yapar)
+                # WDA_MONITOR = 0x00000001 (Sadece monitörde görünür, kayıtta görünmez)
+                WDA_EXCLUDEFROMCAPTURE = 0x00000011
+                
+                user32 = ctypes.windll.user32
+                kernel32 = ctypes.windll.kernel32
+                
+                # Konsol penceresinin Handle'ını al
+                hwnd = kernel32.GetConsoleWindow()
+                
+                if hwnd:
+                    # Korumayı uygula
+                    result = user32.SetWindowDisplayAffinity(hwnd, WDA_EXCLUDEFROMCAPTURE)
+                    if result == 0:
+                        # Eğer 0x11 desteklenmiyorsa (Eski Windows), 0x01 dene
+                        user32.SetWindowDisplayAffinity(hwnd, 1)
+                        
+            elif sys.platform == 'darwin': # macOS
+                # macOS'te Terminal için bunu yapmak zordur (SIP koruması).
+                # Ancak iTerm2 gibi terminallerde "Secure Keyboard Entry" açılabilir.
+                pass
+                
+            elif sys.platform.startswith('linux'):
+                # Linux (X11/Wayland) için standart bir API yoktur.
+                pass
+                
+        except Exception as e:
+            # Sessizce başarısız ol (Hata basıp dikkat çekme)
+            pass
+
+class StylometryGuard:
+    """AI Stylometric Sanitizer: Yazım stilini anonimleştirir."""
+    @staticmethod
+    def sanitize(text):
+        if not text: return text
+        import re
+        # 1. Emojileri Temizle (Basit ASCII dışı karakterler)
+        text = re.sub(r'[^\x00-\x7F]+', '', text)
+        
+        # 2. Noktalama İşaretlerini Standartlaştır (Tekrar edenleri sil: "!!!" -> "!")
+        text = re.sub(r'([!?.,])\1+', r'\1', text)
+        
+        # 3. Küçük Harfe Çevir (Büyük/Küçük harf alışkanlığını gizle)
+        text = text.lower()
+        
+        # 4. Yaygın Argo/Kısaltmaları Değiştir (Opsiyonel - Basit örnek)
+        replacements = {
+            " naber ": " nasılsın ",
+            " slm ": " selam ",
+            " ok ": " tamam ",
+            " k ": " tamam "
+        }
+        for k, v in replacements.items():
+            text = text.replace(k, v)
+            
+        return text.strip()
+
+class DeadMansSwitch:
+    """Dead Man's Switch: Hareketsizlik durumunda sistemi imha eder."""
+    TIMEOUT = 300 # 5 Dakika (300 Saniye)
+    _last_activity = 0
+    _active = False
+    
+    @staticmethod
+    def touch():
+        """Aktivite zamanlayıcısını sıfırlar."""
+        DeadMansSwitch._last_activity = time.time()
+        
+    @staticmethod
+    def start():
+        if DeadMansSwitch._active: return
+        DeadMansSwitch._active = True
+        DeadMansSwitch._last_activity = time.time()
+        
+        def _monitor():
+            print(f"{Fore.RED}[DMS] Dead Man's Switch Aktif (Süre: {DeadMansSwitch.TIMEOUT}s){Style.RESET_ALL}")
+            while True:
+                time.sleep(10)
+                elapsed = time.time() - DeadMansSwitch._last_activity
+                if elapsed > DeadMansSwitch.TIMEOUT:
+                    print(f"\n{Fore.RED}[!!!] DEAD MAN'S SWITCH TETİKLENDİ [!!!]{Style.RESET_ALL}")
+                    print(f"{Fore.RED}Kullanıcı hareketsiz. İmha prosedürü başlatılıyor...{Style.RESET_ALL}")
+                    PanicSystem.nuke_everything()
+                    
+                # Uyarı ver (Son 60 saniye)
+                elif elapsed > (DeadMansSwitch.TIMEOUT - 60):
+                    print(f"\r{Fore.YELLOW}[UYARI] İmha için kalan süre: {int(DeadMansSwitch.TIMEOUT - elapsed)}s (Sıfırlamak için mesaj yaz){Style.RESET_ALL}", end="")
+                    
+        threading.Thread(target=_monitor, daemon=True).start()
+
 class PanicSystem:
     """Acil Durum İmha Sistemi (/nuke)"""
     @staticmethod
     def secure_delete_file(path):
         if not os.path.exists(path): return
         try:
+            # 1. Timestomping (Dosya tarihini geçmişe al - Forensics yanıltma)
+            try:
+                # 2000-01-01 00:00:00
+                old_time = 946684800
+                os.utime(path, (old_time, old_time))
+            except: pass
+
             length = os.path.getsize(path)
             with open(path, "wb") as f:
-                # Dosyanın üzerine 3 kez rastgele veri yaz (DoD Standardı benzeri)
-                for _ in range(3):
-                    f.seek(0)
-                    f.write(os.urandom(length))
-                    f.flush()
+                # 2. DoD 5220.22-M Standartı (3 Geçişli Silme)
+                # Pass 1: Zeros
+                f.seek(0)
+                f.write(b'\x00' * length)
+                f.flush()
+                # Pass 2: Ones
+                f.seek(0)
+                f.write(b'\xFF' * length)
+                f.flush()
+                # Pass 3: Random
+                f.seek(0)
+                f.write(os.urandom(length))
+                f.flush()
+                
             os.remove(path)
             print(f"[İmha] Silindi: {path}")
         except: pass
@@ -168,6 +281,7 @@ class PanicSystem:
 SecurityGuard.anti_debug()
 SecurityGuard.camouflage()
 SecurityGuard.wipe_history()
+ScreenShield.protect() # Ekran Korumasını Başlat
 ClipboardGuard.start_daemon() # Pano korumasını başlat
 
 # ==========================================
@@ -253,9 +367,24 @@ def noise_generator(sock):
 # GÜVENLİK: BELLEK KİLİTLEME & TEMİZLİK
 # ==========================================
 def lock_memory():
-    """RAM'i kilitler, Swap/Pagefile kullanımını engeller (Cross-Platform)."""
+    """RAM'i kilitler, Swap/Pagefile kullanımını engeller (Windows Kernel Level)."""
     try:
-        if os.name == 'posix':
+        if os.name == 'nt':
+            # Windows: SetProcessWorkingSetSize ile RAM'i zorla tut
+            # Bu işlem işletim sistemine "Bu prosesin RAM'ini diske (swap) atma" der.
+            process = ctypes.windll.kernel32.GetCurrentProcess()
+            min_size = ctypes.c_size_t()
+            max_size = ctypes.c_size_t()
+            
+            # Mevcut limitleri al
+            if ctypes.windll.kernel32.GetProcessWorkingSetSize(process, ctypes.byref(min_size), ctypes.byref(max_size)):
+                # Limitleri artır (Örn: +50MB)
+                # Not: Bu işlem Admin yetkisi gerektirebilir, ancak normal kullanıcıda da 
+                # "Working Set"i agresif tutmaya yarar.
+                extra = 50 * 1024 * 1024
+                ctypes.windll.kernel32.SetProcessWorkingSetSize(process, min_size.value + extra, max_size.value + extra)
+                
+        elif os.name == 'posix':
             # Linux ve macOS
             try:
                 # Linux
@@ -269,8 +398,6 @@ def lock_memory():
             
             # MCL_CURRENT | MCL_FUTURE = 3
             libc.mlockall(3) 
-        elif os.name == 'nt':
-             pass 
     except: pass
 
 def secure_wipe(data):
@@ -354,18 +481,18 @@ def install_missing_libs():
 install_missing_libs()
 
 # Kütüphaneler yüklendikten sonra importlar
-import socks
-from colorama import init, Fore, Style
+import socks # type: ignore
+from colorama import init, Fore, Style # type: ignore
 try:
-    import stem.process
+    import stem.process # type: ignore
 except ImportError:
     stem = None
 
-from cryptography.hazmat.primitives import hashes
-from cryptography.hazmat.primitives.asymmetric import x25519
-from cryptography.hazmat.primitives.kdf.hkdf import HKDF
-from cryptography.hazmat.primitives.ciphers.aead import AESGCM, ChaCha20Poly1305
-from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives import hashes # type: ignore
+from cryptography.hazmat.primitives.asymmetric import x25519 # type: ignore
+from cryptography.hazmat.primitives.kdf.hkdf import HKDF # type: ignore
+from cryptography.hazmat.primitives.ciphers.aead import AESGCM, ChaCha20Poly1305 # type: ignore
+from cryptography.hazmat.primitives import serialization # type: ignore
 
 # Renkleri başlat
 init(autoreset=True)
@@ -506,14 +633,22 @@ class CryptoUtils:
             except: pass
 
 class TrafficCamouflage:
-    """Polimorfik Trafik Gizleme"""
+    """Polimorfik Trafik Gizleme (Advanced Steganography)"""
     TEMPLATES = [
-        # Microsoft Telemetry
-        (b"POST /api/v2/telemetry HTTP/1.1\r\n"
-         b"Host: settings-win.data.microsoft.com\r\n"
-         b"User-Agent: Microsoft-WNS/10.0\r\n"
-         b"Content-Type: application/x-binary\r\n"
+        # Microsoft Windows Update (En yaygın trafik)
+        (b"POST /v6/ClientWebService/client.asmx HTTP/1.1\r\n"
+         b"Host: fe2.update.microsoft.com\r\n"
+         b"User-Agent: Windows-Update-Agent/10.0.10011.16384 Client-Protocol/1.21\r\n"
+         b"Content-Type: application/soap+xml; charset=utf-8\r\n"
          b"Connection: keep-alive\r\n"),
+
+        # Microsoft Weather API
+        (b"GET /weather/current?locale=en-US&units=C HTTP/1.1\r\n"
+         b"Host: weather.microsoft.com\r\n"
+         b"User-Agent: Microsoft-Weather-App/4.53.212\r\n"
+         b"Accept: application/json\r\n"
+         b"Connection: keep-alive\r\n"
+         b"X-Correlation-ID: {random_id}\r\n"),
          
         # Google Analytics
         (b"POST /collect HTTP/1.1\r\n"
@@ -555,6 +690,11 @@ class TrafficCamouflage:
     def wrap_packet(data):
         import random
         template = random.choice(TrafficCamouflage.TEMPLATES)
+        # Dinamik ID ekle (Weather API gibi yerler için)
+        if b"{random_id}" in template:
+            rid = str(random.randint(100000, 999999)).encode()
+            template = template.replace(b"{random_id}", rid)
+            
         header = template + f"Content-Length: {len(data)}\r\n\r\n".encode()
         return header + data
 
@@ -811,7 +951,7 @@ def start_tor_client_service():
     except Exception as e:
         print_error(f"Tor başlatılamadı: {e}")
         try:
-            import psutil
+            import psutil # type: ignore
             for proc in psutil.process_iter():
                 if proc.name() == "tor.exe": proc.kill()
             print_system("Eski Tor işlemleri temizlendi. Tekrar deneniyor...")
@@ -883,25 +1023,16 @@ def start_client():
     [====================] 100%
     """)
     
+    # Dead Man's Switch Başlat
+    DeadMansSwitch.start()
+
     # Otomatik Mod: Kullanıcıya sormadan önce argümanlara veya varsayılanlara bak
-    # Kullanıcı "sadece indirip başlatsın" dedi.
-    # Bu yüzden Nickname'i rastgele verelim veya bilgisayar adından türetelim (Anonim kalarak)
     import random
     nickname = f"User{random.randint(1000,9999)}"
     
-    # Hedef sorma kısmını da otomatikleştirmek zor çünkü arkadaşının adresini bilmesi lazım.
-    # Ancak "karşıdaki kişi sadece indirip başlatsın" senaryosunda,
-    # Belki de bu client, server'ı başlatan kişi içindir?
-    # Server'ı başlatan kişi için Localhost'a bağlanmak mantıklı.
-    # Ama arkadaşı için adres girmesi şart.
-    # Şimdilik input bırakıyoruz ama başlığı gizledik.
-    
     print(f"{Fore.GREEN}System ID (Nickname): {nickname}{Style.RESET_ALL}")
     
-    # Eğer server aynı makinedeyse (Localhost) otomatik bağlanmayı dene
-    # Değilse input iste
     if check_tor_port(9050) or check_tor_port(9150):
-         # Tor var, ama hedef neresi?
          pass
 
     raw_input = input(f"{Fore.GREEN}Target Endpoint (IP/Onion): {Style.RESET_ALL}").strip()
@@ -937,6 +1068,13 @@ def start_client():
     if not proxy_port:
         print_error("Tor başlatılamadığı için bağlantı kurulamıyor.")
         return
+    
+    print_system(f"Tor Ağına Bağlanılıyor... Hedef: {HOST}")
+    proxy_port, tor_process = start_tor_client_service()
+    
+    if not proxy_port:
+        print_error("Tor başlatılamadığı için bağlantı kurulamıyor.")
+        return
 
     print_system(f"Proxy tüneli kuruldu: 127.0.0.1:{proxy_port}")
     socks.set_default_proxy(socks.SOCKS5, "127.0.0.1", proxy_port)
@@ -950,7 +1088,6 @@ def start_client():
         sock.connect((HOST, PORT))
         sock.settimeout(None)
         
-        # Server'a Nickname Bildir (Loglar için)
         hello_packet = protocol.create_hello_body(nickname)
         protocol.send_packet(sock, hello_packet)
         
@@ -971,9 +1108,12 @@ def start_client():
     while True:
         try:
             msg_content = input(f"{Fore.GREEN}root@{nickname}:~$ {Style.RESET_ALL}")
+            
+            # Dead Man's Switch Reset
+            DeadMansSwitch.touch()
+            
             if not msg_content: continue
             
-            # PANIC BUTTON KONTROLÜ
             if msg_content.strip() == "/nuke":
                 PanicSystem.nuke_everything()
                 break
@@ -986,20 +1126,18 @@ def start_client():
                 print_error("Henüz güvenli bağlantı kurulmadı. Bekleyin...")
                 continue
             
-            # Mesaja nickname ekle
-            full_msg_str = f"[{nickname}]: {msg_content}"
+            # AI Stylometric Sanitizer Uygula
+            msg_content = StylometryGuard.sanitize(msg_content)
             
-            # Güvenlik: String'i bytearray'e çevir ve şifrele
+            full_msg_str = f"[{nickname}]: {msg_content}"
             full_msg_bytes = bytearray(full_msg_str.encode('utf-8'))
             
-            # encrypt_message artık key_store alıyor
             iv, ciphertext = crypto.encrypt_message(shared_key_store, full_msg_bytes)
             
-            # Temizlik: Mesajı RAM'den sil
             secure_wipe(full_msg_bytes)
             del full_msg_str
             del msg_content
-            gc.collect() # Çöp toplayıcıyı tetikle
+            gc.collect()
             
             packet = protocol.create_data_body(iv, ciphertext)
             protocol.send_packet(sock, packet)
